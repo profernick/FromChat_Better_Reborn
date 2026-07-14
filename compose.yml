@@ -1,0 +1,181 @@
+services:
+  main:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+      target: main
+    env_file:
+      - .env
+    environment:
+      PORT: 8300
+      SERVICE_MODE: production
+      MESSAGING_SERVICE_URL: http://messaging:8301
+      FILE_STORAGE_SERVICE_URL: http://file_storage:8302
+      DATABASE_URL: postgresql://main_user:${MAIN_DB_PASSWORD}@postgres:5432/fromchat_main
+      MAIN_DB_PASSWORD: ${MAIN_DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      COMPLIANCE_PUBLIC_KEY: ${COMPLIANCE_PUBLIC_KEY}
+      MESSAGE_RETENTION_DAYS: ${MESSAGE_RETENTION_DAYS}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-fromchat_dev}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-local_dev_secret_must_be_at_least_32_characters_long}
+      LIVEKIT_URL: ws://livekit:8303
+    ports:
+      - "8300:8300"
+    volumes:
+      - ./data/prod:/app/data
+      - ./firebase-cert.json:/app/firebase-cert.json:ro
+    networks:
+      - public
+      - services
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./src/main
+          target: /app/src/main
+        - action: sync+restart
+          path: ./src/shared
+          target: /app/src/shared
+        - action: rebuild
+          path: ./requirements.txt
+
+  messaging:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+      target: messaging
+    env_file:
+      - .env
+    environment:
+      PORT: 8301
+      SERVICE_MODE: production
+      DATABASE_URL: postgresql://messaging_user:${MESSAGING_DB_PASSWORD}@postgres:5432/fromchat_messaging
+      MESSAGING_DB_PASSWORD: ${MESSAGING_DB_PASSWORD}
+      COMPLIANCE_PUBLIC_KEY: ${COMPLIANCE_PUBLIC_KEY}
+      MESSAGE_RETENTION_DAYS: ${MESSAGE_RETENTION_DAYS}
+    volumes:
+      - ./data/prod/logs/messaging:/app/logs
+    networks:
+      - services
+    depends_on:
+      postgres:
+        condition: service_healthy
+      main:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./src/messaging
+          target: /app/src/messaging
+        - action: sync+restart
+          path: ./src/shared
+          target: /app/src/shared
+        - action: rebuild
+          path: ./requirements.txt
+
+  file_storage:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+      target: file_storage
+    env_file:
+      - .env
+    environment:
+      PORT: 8302
+      SERVICE_MODE: production
+      DATABASE_URL: postgresql://file_storage_user:${FILE_STORAGE_DB_PASSWORD}@postgres:5432/fromchat_files
+      FILE_STORAGE_DB_PASSWORD: ${FILE_STORAGE_DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+    volumes:
+      - ./data/prod/files:/app/files
+      - ./data/prod/logs/file_storage:/app/logs
+    networks:
+      - services
+    depends_on:
+      postgres:
+        condition: service_healthy
+      main:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./src/file_storage
+          target: /app/src/file_storage
+        - action: sync+restart
+          path: ./src/shared
+          target: /app/src/shared
+        - action: rebuild
+          path: ./requirements.txt
+
+  livekit:
+    image: livekit/livekit-server:v1.8.4
+    command: --config /etc/livekit.yaml
+    restart: unless-stopped
+    volumes:
+      - ./src/livekit/compose.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "8303:8303"
+      - "8304:8304"
+      - "50000-50100:50000-50100/udp"
+    networks:
+      - public
+
+  postgres:
+    build:
+      context: ./src/postgres
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: fromchat
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MAIN_DB_PASSWORD: ${MAIN_DB_PASSWORD}
+      MESSAGING_DB_PASSWORD: ${MESSAGING_DB_PASSWORD}
+      FILE_STORAGE_DB_PASSWORD: ${FILE_STORAGE_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./data/prod/postgres:/var/lib/postgresql/data
+    networks:
+      - services
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 10s
+      retries: 15
+    restart: unless-stopped
+
+networks:
+  public:
+    driver: bridge
+    internal: false
+  services:
+    driver: bridge
+    internal: true
