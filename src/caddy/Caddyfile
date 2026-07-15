@@ -127,7 +127,7 @@ l.fromchat.ru {
 	}
 
 	handle /max* {
-		redir "https://mxg.su/fromchat_ch" permanent
+		redir "https://max.ru/join/c5t6LfnCCPetQSAOshmouEvq9vsjHZT_Lt63kw8YCg0" permanent
 	}
 
 	# Serves install.sh: GitHub raw first, Gitea if GitHub fails.
