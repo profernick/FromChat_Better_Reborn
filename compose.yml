@@ -24,6 +24,8 @@ services:
       - "8300:8300"
     volumes:
       - ./data/prod:/app/data
+      # Same bind as file_storage so in-process thumbs/uploads land under data/prod/files.
+      - ./data/prod/files:/app/files
       - ./firebase-cert.json:/app/firebase-cert.json:ro
     networks:
       - public

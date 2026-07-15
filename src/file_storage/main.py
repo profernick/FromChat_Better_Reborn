@@ -93,7 +93,21 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 # Base storage directories
-BASE_DIR = Path("files")
+# Prefer absolute paths so relative CWD never drops files into repo-root ./files/.
+# Docker compose mounts ./data/prod/files → /app/files for file_storage (and main).
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_files_base_dir() -> Path:
+    explicit = os.getenv("FILES_DIR") or os.getenv("FILE_STORAGE_DIR")
+    if explicit:
+        return Path(explicit)
+    if os.getenv("SERVICE_MODE") == "production":
+        return Path("/app/files")
+    return BACKEND_ROOT / "data" / "dev" / "files"
+
+
+BASE_DIR = _resolve_files_base_dir()
 # Legacy upload layout (was data/uploads/files on monolith main under /app/data).
 # Keep under BASE_DIR so Docker uses the file_storage volume (/app/files), not /app/data
 # (different uid / optional mount → PermissionError on prod).
@@ -111,7 +125,7 @@ RESUMABLE_DATA_DIR = RESUMABLE_DIR / "data"
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024 * 1024
 
 # Permissions storage
-PERMISSIONS_FILE = Path("files/permissions.json")
+PERMISSIONS_FILE = BASE_DIR / "permissions.json"
 _file_permissions: dict[str, list[int]] = {}
 
 
