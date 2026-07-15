@@ -114,6 +114,13 @@ fromchat.ru, api.fromchat.ru, git.fromchat.ru, l.fromchat.ru {
 				header_up X-Real-IP {remote_host}
 			}
 		}
+		# GET /rtc returns 404 without a WebSocket upgrade; expose LiveKit "/" as a 200 OK health check.
+		handle /livekit-health {
+			rewrite * /
+			reverse_proxy livekit:8303 {
+				header_up X-Real-IP {remote_host}
+			}
+		}
 
 		handle {
 			reverse_proxy backend:8300 {

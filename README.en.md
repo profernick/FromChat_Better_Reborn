@@ -4,9 +4,9 @@
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/fromchat-messenger/android/main/app/android/src/main/ic_launcher-playstore.png" width="120" alt="FromChat Logo" />
-  
+
   **API server for FromChat messenger**
-  
+
   [🖥️ Backend](https://github.com/fromchat-messenger/backend) • [🌐 Web Client](https://github.com/fromchat-messenger/web) • [📱 Android](https://github.com/fromchat-messenger/android) • [🌍 Website](https://github.com/fromchat-messenger/site)
 </div>
 
@@ -14,7 +14,7 @@
 
 ## 📝 Description
 
-FromChat Backend is a Python FastAPI server providing the API for all clients (Android, Web, iOS). It includes 3 microservices for message processing, file storage, and authentication.
+Python/FastAPI backend for FromChat clients (Android, Web, iOS). Multiple Docker services: public API, messaging, file storage, LiveKit, PostgreSQL. Production edge is Caddy + HAProxy (`compose.prod.yml`).
 
 ---
 
@@ -22,347 +22,187 @@ FromChat Backend is a Python FastAPI server providing the API for all clients (A
 
 | Feature | Android | Web | iOS |
 |---|---|---|---|
-| **Messaging & Profiles** | ✅ | ✅ | ✅ |
-| **Voice/Video Calls** | ✅ | ❌ | ❌ |
-| **Screen Sharing** | ✅ | ❌ | ❌ |
-| **Message Reactions** | ❌ | ✅ | ❌ |
-| **Rich Attachment Support** | ✅ | ❌ | ❌ |
+| **Messaging & profiles** | ✅ | ✅ | ❌ |
+| **Voice/video calls** | ✅ | ✅ | ❌ |
+| **Screen sharing** | ✅ | ✅ | ❌ |
+| **Message reactions** | ❌ | ✅ | ❌ |
+| **Rich attachment support** | ✅ | ❌ | ❌ |
 
 ---
 
 ## 🏗️ Architecture
 
-Backend consists of 3 microservices deployed in Docker:
+| Service | Port (dev) | Network | Purpose |
+|---|---|---|---|
+| **backend** (main) | 8300 | public + services | Public API, auth, profiles, WebSocket |
+| **messaging** | 8301 | services | Internal — messages |
+| **file_storage** | 8302 | services | Internal — files |
+| **livekit** | 8303 / 8304 (+ UDP) | public | Calls |
+| **postgres** | 127.0.0.1:5432 | services | Database |
+| **caddy** + **haproxy** | 80/443 (prod) | — | TLS / reverse proxy (`compose.prod.yml`) |
 
-| Service | Port (dev) | Purpose |
-|---|---|---|
-| **Main Service** | 8300 | Public API, authentication, user profiles |
-| **Messaging Service** | 8301 | Internal — encrypted message processing |
-| **File Storage Service** | 8302 | Internal — file storage and uploads |
-
-**Network Isolation:**
-- `public` network: Main Service + Frontend (accessible externally)
-- `services` network: all 3 services + PostgreSQL (internal only)
-- PostgreSQL: only on `services` network (not public)
+- `public` — reachable from outside (main, livekit, …)
+- `services` — stack-internal only (messaging, file_storage, postgres)
 
 ---
 
-## 🏗️ Tech Stack
+## 🔧 Stack
 
-| Component | Version |
+| Component | Role |
 |---|---|
 | Python | 3.12+ |
-| FastAPI | latest |
-| PostgreSQL | 15+ |
-| SQLAlchemy | 2.0+ |
-| Alembic | for DB migrations |
-| Docker | 20.10+ |
-| Caddy | reverse proxy |
-| LiveKit | video calls |
+| FastAPI | API |
+| PostgreSQL | DB (per-service DBs/users) |
+| SQLAlchemy 2 + Alembic | ORM & migrations |
+| Docker Compose | orchestration |
+| LiveKit | calls |
+| Caddy + HAProxy | production edge |
 
 ---
 
 ## 🔒 Security
 
-- **Message Encryption** — legal server-side encryption
-- **JWT Authentication** — secure token exchange
-- **HTTPS** — all requests encrypted in production
-- **Rate Limiting** — DDoS protection
-- **Audit Logging** — all actions tracked
-- **Service Isolation** — microservices have no direct external access
+- Legal server-side message encryption + compliance keys
+- JWT
+- HTTPS in production
+- Rate limiting (slowapi)
+- Messaging / file storage are not published externally
+- Firebase / Web Push (VAPID) — optional
 
 ---
 
-## 📥 Self-Hosting
+## 📥 Running
 
 ### Requirements
 
-- Docker 20.10+
-- Docker Compose 1.29+
-- 2+ GB RAM
-- 10+ GB disk space
-- Python 3.12+ (local development only)
+- Docker 20.10+ and Compose plugin
+- Python 3.12+ and npm (local scripts / `.env` generation)
+- ~2 GB RAM, ~10 GB disk
 
-### Quick Start (Docker Compose)
-
-**1. Clone repository:**
+### 1. Clone
 
 ```bash
 git clone https://github.com/fromchat-messenger/backend.git
 cd backend
 ```
 
-**2. Copy and fill .env file:**
+### 2. Generate `.env`
+
+There is no `.env.example` — use the generator:
 
 ```bash
-cp .env.example .env
+npm install                 # venv + pip install -r requirements.txt
+npm run generate:env        # scripts/generate:env.sh (interactive)
 ```
 
-Edit `.env` with your parameters:
+Typical keys: `JWT_SECRET`, `COMPLIANCE_PUBLIC_KEY`, Postgres passwords (`POSTGRES_PASSWORD`, `MAIN_DB_PASSWORD`, …), `LIVEKIT_*`, `MESSAGE_RETENTION_DAYS`, VAPID, optional `RELEASES_TOKEN` / Firebase.
 
-```env
-# Database
-POSTGRES_PASSWORD=your_secure_password_here
+Also writes `compliance_keypair.txt` — **keep the private key offline**.
 
-# API
-API_HOST=0.0.0.0
-API_PORT=8300
-API_URL=https://api.fromchat.ru  # For production
-
-# Firebase (optional)
-FIREBASE_ENABLED=false
-FIREBASE_CREDENTIALS_PATH=/path/to/firebase-cert.json
-
-# LiveKit (optional, for calls — clients connect to host:8303 themselves)
-LIVEKIT_API_KEY=your_api_key
-LIVEKIT_API_SECRET=your_api_secret
-```
-
-**3. Start all services:**
+### 3. Start the stack
 
 ```bash
-docker-compose up -d
+npm run docker:up
+# equivalent:
+docker compose --env-file .env -f compose.yml up --build
 ```
 
-This starts:
-- Main API Service on port 8300
-- Messaging Service on port 8301 (internal)
-- File Storage Service on port 8302 (internal)
-- PostgreSQL database
-
-**4. Check status:**
+Tear down (including volumes):
 
 ```bash
-docker-compose ps
+npm run docker:down
 ```
 
-**5. View logs:**
+### 4. Verify
 
 ```bash
-docker-compose logs -f backend-main
-```
-
-### Database Migrations
-
-Migrations run automatically when Docker Compose starts.
-
-To manually run migrations:
-
-```bash
-docker-compose exec backend-main alembic upgrade head
-```
-
-### Testing the API
-
-API is available at `http://localhost:8300` (dev) or `https://api.fromchat.ru` (prod).
-
-**Both URL prefix variants work:**
-
-```bash
-# With /api prefix
-curl http://localhost:8300/api/health
-
-# Without prefix
 curl http://localhost:8300/health
+# {"status":"healthy","service":"main"}
 ```
 
-**Main endpoints:**
+Swagger: `http://localhost:8300/docs`  
+ReDoc: `http://localhost:8300/redoc`
 
+The web client in dev proxies the backend as `/api` → this `:8300` port.
+
+### Production edge
+
+```bash
+docker compose --env-file .env -f compose.yml -f compose.prod.yml up -d
 ```
-POST   /auth/register           — Register
-POST   /auth/login              — Login
-GET    /profiles/{user_id}      — User profile
-GET    /messages                — Get messages
-POST   /messages                — Send message
-WS     /ws                      — WebSocket for real-time
-POST   /calls/token             — LiveKit call token
-```
+
+One-click / published stack: [deployment](https://github.com/fromchat-messenger/deployment).
 
 ### Firebase (optional)
 
-To enable push notifications:
-
-1. Create a Firebase project
-2. Download `firebase-cert.json`
-3. Set `FIREBASE_ENABLED=true` in `.env`
-
-### Production Deployment
-
-**With Caddy (reverse proxy):**
-
-```bash
-# Run with Caddy
-docker-compose -f compose.yml -f compose.prod.yml up -d
-```
-
-Caddy automatically:
-- Routes `api.fromchat.ru` → backend:8300
-- Routes `web.fromchat.ru` → web-client:8304
-- Routes `fromchat.ru` → website:8301
-- Updates SSL certificates (Let's Encrypt)
-
-**Caddy Configuration (Caddyfile):**
-
-```caddy
-api.fromchat.ru {
-    reverse_proxy localhost:8300
-    encode gzip
-}
-
-web.fromchat.ru {
-    reverse_proxy localhost:8304
-    encode gzip
-}
-
-fromchat.ru {
-    reverse_proxy localhost:8301
-    encode gzip
-}
-```
-
-### Health Check
-
-```bash
-curl http://localhost:8300/health
-```
-
-Response:
-```json
-{
-    "status": "healthy",
-    "services": {
-        "database": "connected",
-        "redis": "connected"
-    }
-}
-```
-
-### Troubleshooting
-
-**Service won't start:**
-
-```bash
-# Check logs
-docker-compose logs backend-main
-
-# Check if port is in use
-lsof -i :8300
-
-# Restart service
-docker-compose restart backend-main
-```
-
-**Database issues:**
-
-```bash
-# Check PostgreSQL status
-docker-compose exec postgres psql -U fromchat -c "SELECT 1"
-
-# Recreate database
-docker-compose down -v
-docker-compose up -d
-```
-
-**Migrations not applied:**
-
-```bash
-# Check migration status
-docker-compose exec backend-main alembic current
-
-# Apply migrations manually
-docker-compose exec backend-main alembic upgrade head
-```
+Place `firebase-cert.json` in the repo root (compose mounts it into the main container).
 
 ---
 
-## 🔧 Development
+## 🔧 Local development (main only, no Docker)
 
-### Local Development (without Docker)
-
-**Requirements:**
-
-- Python 3.12+
-- PostgreSQL 15+
-- pip or poetry
-
-**1. Create virtual environment:**
+Prefer Docker for the full stack. Main API alone:
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+npm install
+npm run generate:env   # if .env is missing
+npm run livekit:ensure # if you need calls
+npm run dev            # uvicorn src.main.main:app on :8300 --reload
 ```
 
-**2. Install dependencies:**
+Messaging and file_storage still need to be started separately (usually via Compose).
+
+Migrations run when Docker images start; for manual runs use Alembic from the container / venv for the relevant service.
+
+---
+
+## 🛠 Troubleshooting
 
 ```bash
-pip install -r requirements.txt
+docker compose --env-file .env -f compose.yml logs -f backend
+docker compose --env-file .env -f compose.yml ps
+lsof -i :8300
 ```
 
-**3. Configure .env:**
+Database issues:
 
 ```bash
-cp .env.example .env
+docker compose --env-file .env -f compose.yml exec postgres \
+  psql -U postgres -c "SELECT 1"
+# full data reset (destructive):
+docker compose --env-file .env -f compose.yml down -v
 ```
-
-**4. Run migrations:**
-
-```bash
-alembic upgrade head
-```
-
-**5. Start server:**
-
-```bash
-python -m uvicorn backend.main:app --reload --port 8300
-```
-
-API will be available at `http://localhost:8300`
-
-### API Documentation
-
-Swagger UI: `http://localhost:8300/docs`
-
-ReDoc: `http://localhost:8300/redoc`
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please:
-
-1. Create a branch for your feature
-2. Submit a pull request with description
-3. Ensure tests pass
-
-```bash
-# Run tests
-pytest
-
-# Check code style
-flake8 backend/
-```
+1. Branch for your change
+2. PR with a description
+3. Confirm the stack starts (`npm run docker:up`) and `/health` responds
 
 ---
 
 ## 📄 License
 
-This project is licensed under the GNU Affero General Public License v3.0. See [LICENSE](./LICENSE) for details.
+Distributed under the GNU Affero General Public License v3.0 (same as other FromChat repos).
 
 ---
 
 ## 🔗 Related Repositories
 
-- [Web Client](https://github.com/fromchat-messenger/web) — React web application
-- [Android Client](https://github.com/fromchat-messenger/android) — Android application
-- [Website](https://github.com/fromchat-messenger/site) — Landing & legal pages
+- [Web Client](https://github.com/fromchat-messenger/web)
+- [Android Client](https://github.com/fromchat-messenger/android)
+- [Website](https://github.com/fromchat-messenger/site)
+- [Deployment](https://github.com/fromchat-messenger/deployment)
+- [Updater](https://github.com/fromchat-messenger/updater)
 
 ---
 
 ## 📞 Support
 
-- 📧 Email: support@fromchat.ru
 - 💬 Telegram: https://t.me/fromchat_community
-- 🐛 Issues: GitHub Issues
+- 🐛 Issues: GitHub Issues on the relevant repo
 
 ---
 
