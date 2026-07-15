@@ -29,137 +29,196 @@
 	# Keeps the HTTP server in config so :8080 listener wrappers apply (ACME HTTP-01).
 }
 
-fromchat.ru {
-	reverse_proxy web:80 {
-		header_up X-Real-IP {remote_host}
-	}
-
-	header {
-		X-XSS-Protection "1; mode=block" # Prevent XSS attacks
-		X-Content-Type-Options "nosniff" # Prevent MIME type sniffing
-		X-Frame-Options "DENY" # Prevent clickjacking
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		Permissions-Policy "geolocation=(), microphone=(self), camera=(self)"
-	}
-
-	rate_limit {
-		zone global {
-			match {
-				not path "/.well-known/acme-challenge/*"
-			}
-			key {remote_ip}
-			window 1m
-			burst 20
-			events 500
+# Probe GitHub; redirect there on success, otherwise Gitea.
+# args.0 = github path (e.g. fromchat-messenger/backend)
+# args.1 = gitea path (e.g. FromChat/backend)
+(redir_github_gitea) {
+	rewrite * /{args.0}
+	reverse_proxy https://github.com {
+		header_up Host github.com
+		method HEAD
+		transport http {
+			tls
+		}
+		@github_ok status 2xx 3xx
+		handle_response @github_ok {
+			redir https://github.com/{args.0} permanent
+		}
+		@github_fail status 404 5xx
+		handle_response @github_fail {
+			redir https://git.fromchat.ru/{args.1} permanent
 		}
 	}
+}
 
-	handle_errors {
-		@errors {
-			expression {err.status_code} >= 400 && !{path}.startsWith("/.well-known/acme-challenge/")
+# Fetch from GitHub (or raw); on 404/5xx, same from Gitea.
+# args.0 = github host (github.com | raw.githubusercontent.com)
+# args.1 = github path
+# args.2 = gitea path
+(proxy_github_gitea) {
+	rewrite * /{args.1}
+	reverse_proxy https://{args.0} {
+		header_up Host {args.0}
+		transport http {
+			tls
 		}
-
-		handle @errors {
-			rewrite * /{err.status_code}
-			reverse_proxy https://http.cat {
-				header_up Host {upstream_hostport}
-				replace_status {err.status_code}
+		@upstream_fail status 404 5xx
+		handle_response @upstream_fail {
+			rewrite * /{args.2}
+			reverse_proxy https://git.fromchat.ru {
+				header_up Host git.fromchat.ru
+				transport http {
+					tls
+				}
 			}
 		}
 	}
 }
 
-api.fromchat.ru {
-    reverse_proxy backend:8300 {
-        header_up X-Real-IP {remote_host}
-    }
-
-	# Security headers
-	header {
-		X-XSS-Protection "1; mode=block" # Prevent XSS attacks
-		X-Content-Type-Options "nosniff" # Prevent MIME type sniffing
-		X-Frame-Options "DENY" # Prevent clickjacking
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none';"
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		Permissions-Policy "geolocation=(), microphone=(self), camera=(self)"
-	}
-
-	rate_limit {
-		zone global {
-			match {
-				not path "/.well-known/acme-challenge/*"
-			}
-			key {remote_ip}
-			window 1m
-			burst 20
-			events 1000
-		}
-	}
-
-	handle_errors {
-		@errors {
-			expression {err.status_code} >= 400 && !{path}.startsWith("/.well-known/acme-challenge/")
+# One site block → one multi-SAN cert (bypasses per-name LE "exact set" rate limit).
+fromchat.ru, api.fromchat.ru, git.fromchat.ru, l.fromchat.ru {
+	@site_web host fromchat.ru
+	handle @site_web {
+		reverse_proxy web:80 {
+			header_up X-Real-IP {remote_host}
 		}
 
-		handle @errors {
-			rewrite * /{err.status_code}
-			reverse_proxy "https://http.cat" {
-				header_up Host {upstream_hostport}
-				replace_status {err.status_code}
+		header {
+			X-XSS-Protection "1; mode=block"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+			Permissions-Policy "geolocation=(), microphone=(self), camera=(self)"
+		}
+
+		rate_limit {
+			zone global {
+				match {
+					not path "/.well-known/acme-challenge/*"
+				}
+				key {remote_ip}
+				window 1m
+				burst 20
+				events 500
 			}
 		}
-	}
-}
 
-git.fromchat.ru {
-	reverse_proxy 172.18.0.1:3000 host.docker.internal:3000 172.17.0.1:3000 {
-		lb_policy first
-        header_up X-Real-IP {remote_host}
-	}
-}
-
-# Short public links (install script, socials)
-l.fromchat.ru {
-	handle /telegram* {
-		redir "https://t.me/fromchat_ch" permanent
-	}
-
-	handle /max* {
-		redir "https://max.ru/join/c5t6LfnCCPetQSAOshmouEvq9vsjHZT_Lt63kw8YCg0" permanent
-	}
-
-	# Serves install.sh: GitHub raw first, Gitea if GitHub fails.
-	handle /install* {
-		vars is_install 1
-		rewrite * /fromchat-messenger/deployment/main/install.sh
-		reverse_proxy "https://raw.githubusercontent.com" {
-			header_up Host raw.githubusercontent.com
-			transport http {
-				tls
+		handle_errors {
+			@errors {
+				expression {err.status_code} >= 400 && !{path}.startsWith("/.well-known/acme-challenge/")
 			}
-			@upstream_fail status 404 5xx
-			handle_response @upstream_fail {
-				rewrite * /FromChat/deployment/raw/branch/main/install.sh
-				reverse_proxy "https://git.fromchat.ru" {
-					header_up Host git.fromchat.ru
-					transport http {
-						tls
-					}
+
+			handle @errors {
+				rewrite * /{err.status_code}
+				reverse_proxy https://http.cat {
+					header_up Host {upstream_hostport}
+					replace_status {err.status_code}
 				}
 			}
 		}
 	}
 
-	handle_errors {
-		@install_fail vars is_install 1
-		handle @install_fail {
-			rewrite * /FromChat/deployment/raw/branch/main/install.sh
-			reverse_proxy "https://git.fromchat.ru" {
-				header_up Host git.fromchat.ru
-				transport http {
-					tls
+	@site_api host api.fromchat.ru
+	handle @site_api {
+		reverse_proxy backend:8300 {
+			header_up X-Real-IP {remote_host}
+		}
+
+		header {
+			X-XSS-Protection "1; mode=block"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none';"
+			Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+			Permissions-Policy "geolocation=(), microphone=(self), camera=(self)"
+		}
+
+		rate_limit {
+			zone global {
+				match {
+					not path "/.well-known/acme-challenge/*"
+				}
+				key {remote_ip}
+				window 1m
+				burst 20
+				events 1000
+			}
+		}
+
+		handle_errors {
+			@errors {
+				expression {err.status_code} >= 400 && !{path}.startsWith("/.well-known/acme-challenge/")
+			}
+
+			handle @errors {
+				rewrite * /{err.status_code}
+				reverse_proxy https://http.cat {
+					header_up Host {upstream_hostport}
+					replace_status {err.status_code}
+				}
+			}
+		}
+	}
+
+	@site_git host git.fromchat.ru
+	handle @site_git {
+		reverse_proxy 172.18.0.1:3000 host.docker.internal:3000 172.17.0.1:3000 {
+			lb_policy first
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	@site_l host l.fromchat.ru
+	handle @site_l {
+		handle /telegram* {
+			redir https://t.me/fromchat_ch permanent
+		}
+
+		handle /max* {
+			redir https://max.ru/join/c5t6LfnCCPetQSAOshmouEvq9vsjHZT_Lt63kw8YCg0 permanent
+		}
+
+		handle /support* {
+			redir "https://t.me/fromchat_ch?direct" permanent
+		}
+
+		handle /owner* {
+			redir https://t.me/denis0001_dev permanent
+		}
+
+		handle /backend* {
+			import redir_github_gitea fromchat-messenger/backend FromChat/backend
+		}
+
+		handle /web* {
+			import redir_github_gitea fromchat-messenger/web FromChat/web
+		}
+
+		handle /app* {
+			import redir_github_gitea fromchat-messenger/app FromChat/app
+		}
+
+		handle /github* {
+			import redir_github_gitea fromchat-messenger FromChat
+		}
+
+		# Serves install.sh: GitHub raw first, Gitea if GitHub fails.
+		handle /install* {
+			vars is_install 1
+			import proxy_github_gitea raw.githubusercontent.com fromchat-messenger/deployment/main/install.sh FromChat/deployment/raw/branch/main/install.sh
+		}
+
+		handle_errors {
+			@install_fail vars is_install 1
+			handle @install_fail {
+				rewrite * /FromChat/deployment/raw/branch/main/install.sh
+				reverse_proxy https://git.fromchat.ru {
+					header_up Host git.fromchat.ru
+					transport http {
+						tls
+					}
 				}
 			}
 		}
