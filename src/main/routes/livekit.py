@@ -2,8 +2,8 @@
 Mint LiveKit participant JWTs for DM calls.
 
 Requires LIVEKIT_API_KEY and LIVEKIT_API_SECRET.
-Clients connect to LiveKit themselves using the configured server host on port 8303 —
-this endpoint only returns a token and room name.
+Clients connect to LiveKit via the API host over TLS (Caddy proxies `/rtc*` to the SFU).
+This endpoint only returns a token and room name.
 """
 from __future__ import annotations
 

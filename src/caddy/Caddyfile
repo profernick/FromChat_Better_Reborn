@@ -103,8 +103,22 @@ fromchat.ru, api.fromchat.ru, git.fromchat.ru, l.fromchat.ru {
 
 	@site_api host api.fromchat.ru
 	handle @site_api {
-		reverse_proxy backend:8300 {
-			header_up X-Real-IP {remote_host}
+		# LiveKit SFU (container port 8303) over TLS — clients use wss://api.fromchat.ru/rtc
+		handle /rtc* {
+			reverse_proxy livekit:8303 {
+				header_up X-Real-IP {remote_host}
+			}
+		}
+		handle /twirp* {
+			reverse_proxy livekit:8303 {
+				header_up X-Real-IP {remote_host}
+			}
+		}
+
+		handle {
+			reverse_proxy backend:8300 {
+				header_up X-Real-IP {remote_host}
+			}
 		}
 
 		header {
