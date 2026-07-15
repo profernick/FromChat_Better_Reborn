@@ -1,22 +1,12 @@
-# FromChat Backend — API сервер
+# Серверная часть FromChat
 
 [Read in other languages: English](./README.en.md)
 
-<div align="center">
-  <img src="https://raw.githubusercontent.com/fromchat-messenger/android/main/app/android/src/main/ic_launcher-playstore.png" width="120" alt="FromChat Logo" />
-
-  **API сервер для FromChat мессенджера**
-
-  [🖥️ Backend](https://github.com/fromchat-messenger/backend) • [🌐 Веб-клиент](https://github.com/fromchat-messenger/web) • [📱 Android](https://github.com/fromchat-messenger/android) • [🌍 Website](https://github.com/fromchat-messenger/site)
-</div>
-
----
+_Написано ИИ. Могут быть ошибки._
 
 ## 📝 Описание
 
 Python/FastAPI бэкенд для клиентов FromChat (Android, Web, iOS). Несколько сервисов в Docker: публичный API, контейнер для обработки сообщений, файлы, LiveKit, PostgreSQL. Для продакшена два дополнительных микросервиса — Caddy + HAProxy (`compose.prod.yml`).
-
----
 
 ## 📊 Сравнение клиентов
 
@@ -27,8 +17,6 @@ Python/FastAPI бэкенд для клиентов FromChat (Android, Web, iOS)
 | **Демонстрация экрана** | ✅ | ✅ | ❌ |
 | **Реакции на сообщения** | ❌ | ✅ | ❌ |
 | **Расширенная поддержка вложений** | ✅ | ❌ | ❌ |
-
----
 
 ## 🏗️ Архитектура
 
@@ -44,8 +32,6 @@ Python/FastAPI бэкенд для клиентов FromChat (Android, Web, iOS)
 - `public` — доступ снаружи (main, livekit, …)
 - `services` — только внутри стека (messaging, file_storage, postgres)
 
----
-
 ## 🔧 Стек
 
 | Компонент | Версия / роль |
@@ -56,9 +42,7 @@ Python/FastAPI бэкенд для клиентов FromChat (Android, Web, iOS)
 | SQLAlchemy 2 + Alembic | ORM и миграции |
 | Docker Compose | оркестрация |
 | LiveKit | звонки |
-| Caddy + HAProxy | production edge |
-
----
+| Caddy + HAProxy | продакшен |
 
 ## 🔒 Безопасность
 
@@ -68,8 +52,6 @@ Python/FastAPI бэкенд для клиентов FromChat (Android, Web, iOS)
 - Rate limiting (slowapi)
 - Messaging / file storage не публикуются наружу
 - Firebase / Web Push (VAPID) — опционально
-
----
 
 ## 📥 Запуск
 
@@ -137,8 +119,6 @@ docker compose --env-file .env -f compose.yml -f compose.prod.yml up -d
 
 Положите `firebase-cert.json` в корень репозитория (compose монтирует его в контейнер main).
 
----
-
 ## 🔧 Локальная разработка (только main, без Docker)
 
 Для полного стека используйте Docker. Main API отдельно:
@@ -154,7 +134,6 @@ Messaging и file_storage в этом режиме нужно поднимать
 
 Миграции в Docker применяются при старте образов; для ручного запуска используйте Alembic из контейнера / venv по вашей схеме сервиса.
 
----
 
 ## 🛠 Устранение неполадок
 
@@ -173,21 +152,15 @@ docker compose --env-file .env -f compose.yml exec postgres \
 docker compose --env-file .env -f compose.yml down -v
 ```
 
----
-
 ## 🤝 Внесение вклада
 
 1. Ветка под изменение
 2. PR с описанием
 3. Проверьте, что стек поднимается (`npm run docker:up`) и `/health` отвечает
 
----
-
 ## 📄 Лицензия
 
 Проект распространяется на условиях GNU Affero General Public License v3.0 (как и остальные репозитории FromChat).
-
----
 
 ## 🔗 Связанные репозитории
 
@@ -197,13 +170,7 @@ docker compose --env-file .env -f compose.yml down -v
 - [Deployment](https://github.com/fromchat-messenger/deployment)
 - [Updater](https://github.com/fromchat-messenger/updater)
 
----
-
 ## 📞 Поддержка
 
 - 💬 Telegram: https://t.me/fromchat_community
 - 🐛 Issues: GitHub Issues соответствующего репозитория
-
----
-
-**[⬆ к началу](#fromchat-backend--api-сервер)**
