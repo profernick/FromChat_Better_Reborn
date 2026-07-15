@@ -303,11 +303,15 @@ if ! read_yes "Write generated files? [y/N]: "; then
   exit 1
 fi
 
-prompt_output_file ENV_PATH "../deployment/.env.prod" "Output path for .env file (relative to repo root)"
+prompt_output_file ENV_PATH "${FROMCHAT_ENV_OUT:-../deployment/.env.prod}" "Output path for .env file (relative to repo root)"
 if [[ "$ENV_PATH" != /* ]]; then
   ENV_PATH="${ROOT}/${ENV_PATH}"
 fi
-COMPLIANCE_TXT="${ROOT}/data/dev/compliance_keypair.txt"
+if [[ -n "${FROMCHAT_COMPLIANCE_OUT:-}" ]]; then
+  COMPLIANCE_TXT="${FROMCHAT_COMPLIANCE_OUT}"
+else
+  COMPLIANCE_TXT="${ROOT}/data/dev/compliance_keypair.txt"
+fi
 
 if [[ -f "$ENV_PATH" ]] && read_yes_default_yes "File exists: ${ENV_PATH}. Create backup before overwrite? [Y/n]: "; then
   _do_backup_copy "$ENV_PATH"

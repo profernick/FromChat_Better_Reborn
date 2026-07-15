@@ -89,7 +89,7 @@ api.fromchat.ru {
 	rate_limit {
 		zone global {
 			match {
-				not path /.well-known/acme-challenge/*
+				not path "/.well-known/acme-challenge/*"
 			}
 			key {remote_ip}
 			window 1m
@@ -117,5 +117,51 @@ git.fromchat.ru {
 	reverse_proxy 172.18.0.1:3000 host.docker.internal:3000 172.17.0.1:3000 {
 		lb_policy first
         header_up X-Real-IP {remote_host}
+	}
+}
+
+# Short public links (install script, socials)
+l.fromchat.ru {
+	handle /telegram* {
+		redir "https://t.me/fromchat_ch" permanent
+	}
+
+	handle /max* {
+		redir "https://mxg.su/fromchat_ch" permanent
+	}
+
+	# Serves install.sh: GitHub raw first, Gitea if GitHub fails.
+	handle /install* {
+		vars is_install 1
+		rewrite * /fromchat-messenger/deployment/main/install.sh
+		reverse_proxy "https://raw.githubusercontent.com" {
+			header_up Host raw.githubusercontent.com
+			transport http {
+				tls
+			}
+			@upstream_fail status 404 5xx
+			handle_response @upstream_fail {
+				rewrite * /FromChat/deployment/raw/branch/main/install.sh
+				reverse_proxy "https://git.fromchat.ru" {
+					header_up Host git.fromchat.ru
+					transport http {
+						tls
+					}
+				}
+			}
+		}
+	}
+
+	handle_errors {
+		@install_fail vars is_install 1
+		handle @install_fail {
+			rewrite * /FromChat/deployment/raw/branch/main/install.sh
+			reverse_proxy "https://git.fromchat.ru" {
+				header_up Host git.fromchat.ru
+				transport http {
+					tls
+				}
+			}
+		}
 	}
 }
