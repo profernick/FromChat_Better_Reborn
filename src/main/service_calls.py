@@ -587,6 +587,44 @@ async def get_resumable_upload_blob_path_in_storage(
         return r.json()
 
 
+async def promote_resumable_upload_to_normal_in_storage(
+    upload_id: str,
+    user_id: int,
+    stored_name: str,
+    timeout: float = 120.0,
+) -> Dict[str, Any]:
+    """Copy a completed resumable upload into normal public attachment storage."""
+    mod = _get_file_storage_module()
+    if mod:
+        try:
+            return await mod.promote_resumable_upload_to_normal_internal(
+                upload_id,
+                user_id,
+                stored_name,
+            )
+        except Exception as e:
+            logger.error("In-process file_storage.promote_resumable_upload_to_normal failed: %s", e)
+            raise
+
+    file_storage_url = (
+        os.getenv("FILE_STORAGE_URL")
+        or os.getenv("FILE_STORAGE_SERVICE_URL")
+        or _default_file_storage_base_url()
+    )
+    url = f"{file_storage_url.rstrip('/')}/uploads/resumable/{upload_id}/promote-normal"
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(
+            url,
+            json={"stored_name": stored_name},
+            headers={"X-User-ID": str(user_id)},
+        )
+        r.raise_for_status()
+        return r.json()
+
+
 async def store_encrypted_file_from_path(
     source_path: str,
     filename: str,

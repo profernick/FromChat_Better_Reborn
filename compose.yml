@@ -149,35 +149,6 @@ services:
     networks:
       - public
 
-  caddy:
-    build:
-      context: ./src/caddy
-      dockerfile: Dockerfile
-    # Loopback only — HAProxy (host network) forwards 80/443 here with PROXY protocol.
-    ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:8443:8443"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - ./data/prod/caddy/data:/data
-      - ./data/prod/caddy/config:/config
-    networks:
-      - public
-    restart: unless-stopped
-
-  haproxy:
-    build:
-      context: ./src/haproxy
-      dockerfile: Dockerfile
-    # Host network so UFW can filter 80/443 (Docker-published ports bypass UFW).
-    network_mode: host
-    # Image defaults to user haproxy; need root to bind :80/:443, then cfg drops privileges.
-    user: "0:0"
-    depends_on:
-      - caddy
-    restart: unless-stopped
-
   postgres:
     build:
       context: ./src/postgres

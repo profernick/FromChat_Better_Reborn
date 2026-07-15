@@ -537,6 +537,15 @@ async def complete_resumable_upload(upload_id: str, request: Request):
     return await complete_resumable_upload_internal(upload_id, int(user_id_header))
 
 
+@app.get("/uploads/resumable/{upload_id}/blob-path", response_model=None)
+async def get_resumable_upload_blob_path(upload_id: str, request: Request):
+    """Return on-disk path to completed resumable ciphertext (service-to-service)."""
+    user_id_header = request.headers.get("X-User-ID")
+    if not user_id_header:
+        raise HTTPException(status_code=401, detail="Missing user authentication")
+    return await get_resumable_upload_blob_path_internal(upload_id, int(user_id_header))
+
+
 async def get_resumable_upload_blob_path_internal(upload_id: str, user_id: int) -> dict:
     """Return on-disk path to completed resumable ciphertext (no base64)."""
     meta = _read_resumable_meta(upload_id)
@@ -552,6 +561,73 @@ async def get_resumable_upload_blob_path_internal(upload_id: str, user_id: int) 
         "file_size": int(meta.get("total_size", 0)),
         "encrypted_file_path": str(data_path.resolve()),
     }
+
+
+_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
+
+async def promote_resumable_upload_to_normal_internal(
+    upload_id: str,
+    user_id: int,
+    stored_name: str,
+) -> dict:
+    """Copy a completed resumable upload into FILES_NORMAL_DIR (same container)."""
+    meta = _read_resumable_meta(upload_id)
+    _assert_resumable_access(meta, user_id)
+    if not meta.get("complete"):
+        raise HTTPException(status_code=409, detail="Upload not completed")
+    data_path = _resumable_data_path(upload_id)
+    if not data_path.is_file():
+        raise HTTPException(status_code=404, detail="Upload payload not found")
+
+    stored = await store_normal_file_from_path_internal(stored_name, data_path)
+    original_name = str(meta.get("filename") or "file")
+    file_size = int(stored.get("size") or meta.get("total_size") or 0)
+    safe_name = str(stored.get("stored_name") or Path(stored_name).name)
+
+    if Path(original_name).suffix.lower() in _IMAGE_EXTENSIONS and file_size > 0:
+        dest = FILES_NORMAL_DIR / safe_name
+        if dest.is_file():
+            try:
+                dimensions = read_image_dimensions_from_path(dest)
+                if dimensions and int(dimensions[0]) > 0 and int(dimensions[1]) > 0:
+                    await store_public_image_dimensions_internal(
+                        safe_name,
+                        width=int(dimensions[0]),
+                        height=int(dimensions[1]),
+                        file_size=file_size,
+                    )
+            except Exception as error:
+                logger.warning(
+                    "STORAGE: Failed storing image dimensions for %s: %s",
+                    safe_name,
+                    error,
+                )
+
+    return {
+        "upload_id": upload_id,
+        "filename": original_name,
+        "file_size": file_size,
+        "stored_name": safe_name,
+        "path": str(stored.get("path") or f"/uploads/files/normal/{safe_name}"),
+    }
+
+
+@app.post("/uploads/resumable/{upload_id}/promote-normal", response_model=None)
+async def promote_resumable_upload_to_normal(upload_id: str, request: Request):
+    """Copy a completed resumable upload into normal public attachment storage."""
+    user_id_header = request.headers.get("X-User-ID")
+    if not user_id_header:
+        raise HTTPException(status_code=401, detail="Missing user authentication")
+    payload = await request.json()
+    stored_name = str(payload.get("stored_name") or "").strip()
+    if not stored_name:
+        raise HTTPException(status_code=400, detail="stored_name is required")
+    return await promote_resumable_upload_to_normal_internal(
+        upload_id,
+        int(user_id_header),
+        stored_name,
+    )
 
 
 async def upload_encrypted_file_from_path_internal(

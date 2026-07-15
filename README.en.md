@@ -192,7 +192,7 @@ To enable push notifications:
 
 ```bash
 # Run with Caddy
-docker-compose -f compose.yml -f src/docker-compose.prod.yml up -d
+docker-compose -f compose.yml -f compose.prod.yml up -d
 ```
 
 Caddy automatically:

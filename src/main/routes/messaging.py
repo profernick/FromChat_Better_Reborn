@@ -79,7 +79,7 @@ def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict
 # endregion agent log
 
 # Legacy local fallback only — canonical public attachments live in file_storage:
-# files/data/uploads/files/normal/{name} (served via /api/uploads/files/normal/...).
+# files/data/uploads/files/normal/{name} (served via /uploads/files/normal/...).
 FILES_BASE_DIR = DATA_DIR / "uploads" / "files"
 FILES_NORMAL_DIR = FILES_BASE_DIR / "normal"
 FILES_ENCRYPTED_DIR = FILES_BASE_DIR / "encrypted"
@@ -187,6 +187,49 @@ _SHORT_MESSAGE_REPEAT_LIMIT = 4
 _recent_message_cache: dict[int, deque[tuple[str, str, float, int]]] = defaultdict(deque)  # (normalized, content, timestamp, message_id)
 _message_rate_cache: dict[int, deque[tuple[float, int]]] = defaultdict(deque)  # (timestamp, message_id)
 _burst_last_logged: dict[int, float] = {}
+
+_PUBLIC_SEND_IDEMPOTENCY_TTL_SEC = 3600
+_public_send_by_client_id: dict[tuple[int, str], tuple[int, float]] = {}
+
+
+def _prune_public_send_idempotency(now: float | None = None) -> None:
+    now = now if now is not None else time.time()
+    stale = [
+        key
+        for key, (_, ts) in _public_send_by_client_id.items()
+        if now - ts > _PUBLIC_SEND_IDEMPOTENCY_TTL_SEC
+    ]
+    for key in stale:
+        _public_send_by_client_id.pop(key, None)
+
+
+def _find_idempotent_public_message(
+    user_id: int,
+    client_message_id: str | None,
+    db: Session,
+) -> Message | None:
+    if not client_message_id:
+        return None
+    _prune_public_send_idempotency()
+    entry = _public_send_by_client_id.get((user_id, client_message_id))
+    if not entry:
+        return None
+    message_id, _ = entry
+    return (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.user_id == user_id)
+        .first()
+    )
+
+
+def _remember_idempotent_public_send(
+    user_id: int,
+    client_message_id: str | None,
+    message_id: int,
+) -> None:
+    if not client_message_id:
+        return
+    _public_send_by_client_id[(user_id, client_message_id)] = (message_id, time.time())
 
 
 def _normalize_for_spam(text: str) -> str:
@@ -367,7 +410,7 @@ def convert_message(
         "reactions": list(reactions_dict.values()),
         "files": [
             {
-                "path": f"/api/uploads/files/normal/{Path(f.path).name}",
+                "path": f"/uploads/files/normal/{Path(f.path).name}",
                 "id": f.id,
                 "name": f.name,
                 "message_id": f.message_id
@@ -467,7 +510,7 @@ def convert_dm_envelope(db: Session, envelope: DMEnvelope, user_id: int | None =
     }
 
     for f in (envelope.files or []):
-        safe_path = f"/api/uploads/files/encrypted/{Path(f.path).name}"
+        safe_path = f"/uploads/files/encrypted/{Path(f.path).name}"
         # Files use the same MEK as the message envelope
         selected_file_wrapped = wrapped_mek_b64
         result["files"].append(
@@ -781,35 +824,36 @@ async def _attach_resumable_uploads_to_message(
         return
 
     total_size = 0
-    payloads: list[dict] = []
+    statuses: list[dict] = []
     for upload_id in upload_ids:
-        uploaded_payload = await service_calls.get_resumable_upload_blob_path_in_storage(
+        upload_status = await service_calls.get_resumable_upload_status_in_storage(
             upload_id, current_user.id
         )
-        file_size = int(uploaded_payload.get("file_size", 0))
+        if not upload_status.get("complete"):
+            raise HTTPException(status_code=409, detail="Upload not completed")
+        file_size = int(upload_status.get("total_size", 0))
         total_size += file_size
-        payloads.append(uploaded_payload)
+        statuses.append(upload_status)
         if total_size > MAX_TOTAL_SIZE:
             raise HTTPException(status_code=400, detail="Total attachments size exceeds 4GB")
 
-    for upload_id, uploaded_payload in zip(upload_ids, payloads):
-        source_path = Path(uploaded_payload["encrypted_file_path"])
-        original_name = Path(uploaded_payload.get("filename", "file")).name
-        mf = await _store_public_normal_attachment(
-            message.id,
-            original_name,
-            source_path=source_path,
+    for upload_id, upload_status in zip(upload_ids, statuses):
+        original_name = Path(upload_status.get("filename", "file")).name
+        ext = Path(original_name).suffix.lower()
+        uid = uuid.uuid4().hex
+        safe_name = f"{message.id}_{uid}{ext or ''}"
+        promoted = await service_calls.promote_resumable_upload_to_normal_in_storage(
+            upload_id,
+            current_user.id,
+            safe_name,
+        )
+        stored_path = str(promoted.get("path") or f"/uploads/files/normal/{safe_name}")
+        mf = MessageFile(
+            message_id=message.id,
+            name=original_name,
+            path=stored_path,
         )
         db.add(mf)
-
-    db.commit()
-    db.refresh(message)
-
-    for upload_id in upload_ids:
-        try:
-            await service_calls.delete_resumable_upload_in_storage(upload_id, current_user.id)
-        except Exception as cleanup_error:
-            logger.warning("Failed to cleanup resumable upload %s: %s", upload_id, cleanup_error)
 
 
 async def _send_message_internal(
@@ -827,6 +871,20 @@ async def _send_message_internal(
         original_message = db.query(Message).filter(Message.id == message_request.reply_to_id).first()
         if not original_message:
             raise HTTPException(status_code=404, detail="Original message not found")
+
+    raw_client_id = (message_request.client_message_id or "").strip() or None
+    if raw_client_id:
+        existing = _find_idempotent_public_message(current_user.id, raw_client_id, db)
+        if existing is not None:
+            return {
+                "status": "success",
+                "message": convert_message_for_user(
+                    existing,
+                    current_user.id,
+                    sender_client_message_id=raw_client_id,
+                    verified_users_data=get_verified_users_data(db),
+                ),
+            }
 
     raw_content = message_request.content.strip()
     uploaded_file_ids = [
@@ -865,50 +923,62 @@ async def _send_message_internal(
     )
 
     db.add(new_message)
-    db.commit()
-    db.refresh(new_message)
+    upload_ids_for_cleanup: list[str] = []
 
-    # Handle files if provided (normal, not encrypted)
-    if files:
-        total_size = 0
-        for up in files:
-            # Accumulate size if available
-            if hasattr(up, "size") and up.size is not None:
-                total_size += int(up.size)
-            else:
-                # If size unknown, read into memory to determine
-                data = await up.read()
+    try:
+        db.flush()
+
+        # Handle files if provided (normal, not encrypted)
+        if files:
+            total_size = 0
+            for up in files:
+                # Accumulate size if available
+                if hasattr(up, "size") and up.size is not None:
+                    total_size += int(up.size)
+                else:
+                    # If size unknown, read into memory to determine
+                    data = await up.read()
+                    up.file.seek(0)
+                    total_size += len(data)
+                if total_size > MAX_TOTAL_SIZE:
+                    raise HTTPException(status_code=400, detail="Total attachments size exceeds 4GB")
+
+            for up in files:
+                original_name = Path(up.filename or "file").name
+                content = await up.read()
                 up.file.seek(0)
-                total_size += len(data)
-            if total_size > MAX_TOTAL_SIZE:
-                raise HTTPException(status_code=400, detail="Total attachments size exceeds 4GB")
+                mf = await _store_public_normal_attachment(
+                    new_message.id,
+                    original_name,
+                    content=content,
+                )
+                db.add(mf)
 
-        for up in files:
-            original_name = Path(up.filename or "file").name
-            content = await up.read()
-            up.file.seek(0)
-            mf = await _store_public_normal_attachment(
-                new_message.id,
-                original_name,
-                content=content,
+        if uploaded_file_ids:
+            await _attach_resumable_uploads_to_message(
+                new_message,
+                uploaded_file_ids,
+                current_user,
+                db,
             )
-            db.add(mf)
+            upload_ids_for_cleanup = list(uploaded_file_ids)
+
         db.commit()
         db.refresh(new_message)
+    except Exception:
+        db.rollback()
+        raise
 
-    if uploaded_file_ids:
-        await _attach_resumable_uploads_to_message(
-            new_message,
-            uploaded_file_ids,
-            current_user,
-            db,
-        )
+    for upload_id in upload_ids_for_cleanup:
+        try:
+            await service_calls.delete_resumable_upload_in_storage(upload_id, current_user.id)
+        except Exception as cleanup_error:
+            logger.warning("Failed to cleanup resumable upload %s: %s", upload_id, cleanup_error)
 
-    client_message_id = None
-    if message_request.client_message_id:
-        raw_client_id = message_request.client_message_id.strip()
-        if raw_client_id:
-            client_message_id = raw_client_id
+    if raw_client_id:
+        _remember_idempotent_public_send(current_user.id, raw_client_id, new_message.id)
+
+    client_message_id = raw_client_id
 
     # Send push notifications for public messages
     try:

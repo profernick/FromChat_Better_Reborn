@@ -192,7 +192,7 @@ POST   /calls/token             — Токен для LiveKit вызова
 
 ```bash
 # Запустить с Caddy
-docker-compose -f compose.yml -f src/docker-compose.prod.yml up -d
+docker-compose -f compose.yml -f compose.prod.yml up -d
 ```
 
 Caddy автоматически:
