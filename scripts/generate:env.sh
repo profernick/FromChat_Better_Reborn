@@ -3,7 +3,7 @@
 # _ENV_TEMPLATE: one KEY=value per line. Use <set> for stdin prompts. Use
 # <gen:…> only where a dedicated step is needed. Any $(command) here runs when
 # this script executes (after cd "$ROOT"). Piped stdin order:
-# DEPLOYMENT_SERVER, RELEASES_TOKEN, UPDATER_TOKEN, then commit (y/n),
+# DEPLOYMENT_SERVER, RELEASES_TOKEN, then commit (y/n),
 # then output .env file path (blank = ../deployment/.env.prod). Writes that file and
 # compliance_keypair.txt (default: data/dev/compliance_keypair.txt).
 # If each target exists, backup prompt [Y/n] (Enter = yes; only n/no skips).
@@ -36,7 +36,6 @@ MAIN_DB_PASSWORD=$(openssl rand -hex 8 </dev/null)
 MESSAGING_DB_PASSWORD=$(openssl rand -hex 8 </dev/null)
 FILE_STORAGE_DB_PASSWORD=$(openssl rand -hex 8 </dev/null)
 RELEASES_TOKEN=<set>
-UPDATER_TOKEN=<set>
 MESSAGE_RETENTION_DAYS=180
 EOF
 )"

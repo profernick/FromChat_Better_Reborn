@@ -30,43 +30,40 @@
 }
 
 # Probe GitHub; redirect there on success, otherwise Gitea.
-# args.0 = github path (e.g. fromchat-messenger/backend)
-# args.1 = gitea path (e.g. FromChat/backend)
+# args[0] = github path (e.g. fromchat-messenger/backend)
+# args[1] = gitea path (e.g. FromChat/backend)
 (redir_github_gitea) {
-	rewrite * /{args.0}
+	rewrite * /{args[0]}
 	reverse_proxy https://github.com {
-		header_up Host github.com
 		method HEAD
 		transport http {
 			tls
 		}
 		@github_ok status 2xx 3xx
 		handle_response @github_ok {
-			redir https://github.com/{args.0} permanent
+			redir https://github.com/{args[0]} permanent
 		}
 		@github_fail status 404 5xx
 		handle_response @github_fail {
-			redir https://git.fromchat.ru/{args.1} permanent
+			redir https://git.fromchat.ru/{args[1]} permanent
 		}
 	}
 }
 
 # Fetch from GitHub (or raw); on 404/5xx, same from Gitea.
-# args.0 = github host (github.com | raw.githubusercontent.com)
-# args.1 = github path
-# args.2 = gitea path
+# args[0] = github host (github.com | raw.githubusercontent.com)
+# args[1] = github path
+# args[2] = gitea path
 (proxy_github_gitea) {
-	rewrite * /{args.1}
-	reverse_proxy https://{args.0} {
-		header_up Host {args.0}
+	rewrite * /{args[1]}
+	reverse_proxy https://{args[0]} {
 		transport http {
 			tls
 		}
 		@upstream_fail status 404 5xx
 		handle_response @upstream_fail {
-			rewrite * /{args.2}
+			rewrite * /{args[2]}
 			reverse_proxy https://git.fromchat.ru {
-				header_up Host git.fromchat.ru
 				transport http {
 					tls
 				}
@@ -75,7 +72,6 @@
 	}
 }
 
-# One site block → one multi-SAN cert (bypasses per-name LE "exact set" rate limit).
 fromchat.ru, api.fromchat.ru, git.fromchat.ru, l.fromchat.ru {
 	@site_web host fromchat.ru
 	handle @site_web {
@@ -101,20 +97,6 @@ fromchat.ru, api.fromchat.ru, git.fromchat.ru, l.fromchat.ru {
 				window 1m
 				burst 20
 				events 500
-			}
-		}
-
-		handle_errors {
-			@errors {
-				expression {err.status_code} >= 400 && !{path}.startsWith("/.well-known/acme-challenge/")
-			}
-
-			handle @errors {
-				rewrite * /{err.status_code}
-				reverse_proxy https://http.cat {
-					header_up Host {upstream_hostport}
-					replace_status {err.status_code}
-				}
 			}
 		}
 	}
@@ -144,20 +126,6 @@ fromchat.ru, api.fromchat.ru, git.fromchat.ru, l.fromchat.ru {
 				window 1m
 				burst 20
 				events 1000
-			}
-		}
-
-		handle_errors {
-			@errors {
-				expression {err.status_code} >= 400 && !{path}.startsWith("/.well-known/acme-challenge/")
-			}
-
-			handle @errors {
-				rewrite * /{err.status_code}
-				reverse_proxy https://http.cat {
-					header_up Host {upstream_hostport}
-					replace_status {err.status_code}
-				}
 			}
 		}
 	}
@@ -209,17 +177,28 @@ fromchat.ru, api.fromchat.ru, git.fromchat.ru, l.fromchat.ru {
 			vars is_install 1
 			import proxy_github_gitea raw.githubusercontent.com fromchat-messenger/deployment/main/install.sh FromChat/deployment/raw/branch/main/install.sh
 		}
+	}
 
-		handle_errors {
-			@install_fail vars is_install 1
-			handle @install_fail {
-				rewrite * /FromChat/deployment/raw/branch/main/install.sh
-				reverse_proxy https://git.fromchat.ru {
-					header_up Host git.fromchat.ru
-					transport http {
-						tls
-					}
+	# handle_errors must be at site scope (not inside handle).
+	handle_errors {
+		@install_fail vars is_install 1
+		handle @install_fail {
+			rewrite * /FromChat/deployment/raw/branch/main/install.sh
+			reverse_proxy https://git.fromchat.ru {
+				transport http {
+					tls
 				}
+			}
+		}
+
+		@http_cat {
+			expression ({host} == "fromchat.ru" || {host} == "api.fromchat.ru") && {err.status_code} >= 400 && !{path}.startsWith("/.well-known/acme-challenge/")
+		}
+		handle @http_cat {
+			rewrite * /{err.status_code}
+			reverse_proxy https://http.cat {
+				header_up Host {upstream_hostport}
+				replace_status {err.status_code}
 			}
 		}
 	}
