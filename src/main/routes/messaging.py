@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sqlalchemy.orm import Session
 from ..dependencies import get_current_user, get_current_user_allow_suspended, get_db
 from .account import convert_user_for_dm_conversation
-from ..deleted_user import deleted_username_for, is_deleted_user, is_suspended_user
+from ..deleted_user import deleted_username_for, is_deleted_or_suspended, is_deleted_user, is_suspended_user, public_display_username
 from ..constants import OWNER_USERNAME, DATA_DIR
 from ..models import Message, SendMessageRequest, EditMessageRequest, User, DMEnvelope, DmConversationPreference, MessageFile, DMFile, Reaction, ReactionRequest, ReactionResponse, DMReaction, DMReactionRequest, DMReactionResponse, UpdateLog, MessageEditHistory, MessageEditHistoryResponse
 from ..presence_service import presence_service
@@ -49,34 +49,6 @@ router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
 
 MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024  # 4 GB
-
-# region agent log
-_DEBUG_LOG_PATH = Path("/Volumes/Data/Projects/Programming/FromChat/Android/.cursor/debug-72e992.log")
-
-
-def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    """
-    Append a structured NDJSON log line for pagination debugging.
-    Never raises: logging must not affect request handling.
-    """
-    try:
-        payload = {
-            "sessionId": "72e992",
-            "runId": "backend-pagination",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        # Swallow all errors – debug-only path.
-        pass
-
-# endregion agent log
 
 # Legacy local fallback only — canonical public attachments live in file_storage:
 # files/data/uploads/files/normal/{name} (served via /uploads/files/normal/...).
@@ -276,7 +248,12 @@ def _monitor_public_message_activity(user: User, content: str, message_id: int, 
             **extra,
         )
         try:
-            asyncio.create_task(messagingManager.send_suspension_to_user(user.id, reason))
+            asyncio.create_task(messagingManager.send_suspension_to_user(user.id, reason, db))
+        except Exception:
+            pass
+        try:
+            from .profile import broadcast_profile_update
+            asyncio.create_task(broadcast_profile_update(user, db))
         except Exception:
             pass
 
@@ -382,20 +359,19 @@ def convert_message(
             reactions_dict[emoji]["count"] += 1
             reactions_dict[emoji]["users"].append({
                 "id": reaction.user_id,
-                "username": reaction.user.display_name
+                "username": (
+                    deleted_username_for(reaction.user_id)
+                    if is_deleted_or_suspended(reaction.user)
+                    else reaction.user.display_name
+                ),
             })
 
-    # Handle deleted or suspended authors
-    if is_deleted_user(msg.author):
+    # Handle deleted or suspended authors (peers see them as deleted accounts)
+    if is_deleted_or_suspended(msg.author):
         username = deleted_username_for(msg.author.id)
         profile_picture = None
         verified = False
         verification_status = VerificationStatus.NONE.value
-    elif is_suspended_user(msg.author):
-        username = msg.author.display_name
-        profile_picture = msg.author.profile_picture
-        verified = False
-        verification_status = VerificationStatus.BLOCKED.value
     else:
         username = msg.author.display_name
         profile_picture = msg.author.profile_picture
@@ -464,22 +440,22 @@ def convert_dm_envelope(db: Session, envelope: DMEnvelope, user_id: int | None =
             reactions_dict[emoji]["count"] += 1
             reactions_dict[emoji]["users"].append({
                 "id": reaction.user_id,
-                "username": reaction.user.display_name
+                "username": (
+                    deleted_username_for(reaction.user_id)
+                    if is_deleted_or_suspended(reaction.user)
+                    else reaction.user.display_name
+                ),
             })
 
     # Get sender info for verified status
     sender = db.query(User).filter(User.id == envelope.sender_id).first()
     verified_users_data = get_verified_users_data(db)
 
-    # Handle deleted or suspended senders
-    if sender and is_deleted_user(sender):
+    # Handle deleted or suspended senders (peers see them as deleted accounts)
+    if sender and is_deleted_or_suspended(sender):
         sender_verified = False
         verification_status = VerificationStatus.NONE.value
         sender_username = deleted_username_for(sender.id)
-    elif sender and is_suspended_user(sender):
-        sender_verified = False
-        verification_status = VerificationStatus.BLOCKED.value
-        sender_username = sender.display_name or sender.username
     else:
         sender_verified = sender.verified if sender else False
         verification_status = (
@@ -1213,36 +1189,11 @@ def _paginate_rows_by_id(
     """
     if limit is None:
         rows = query.order_by(id_column.asc()).all()
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H1_after_pagination",
-            location="messaging._paginate_rows_by_id",
-            message="unbounded pagination",
-            data={
-                "mode": "all",
-                "limit": None,
-                "before_id": before_id,
-                "after_id": after_id,
-                "around_id": around_id,
-                "row_count": len(rows),
-                "min_id": min((getattr(r, "id", None) for r in rows), default=None),
-                "max_id": max((getattr(r, "id", None) for r in rows), default=None),
-            },
-        )
-        # endregion agent log
         return rows, False, False, False
 
     if around_id is not None:
         anchor = query.filter(id_column == around_id).first()
         if anchor is None:
-            # region agent log
-            _agent_debug_log(
-                hypothesis_id="H2_around_pagination",
-                location="messaging._paginate_rows_by_id",
-                message="around_id anchor missing",
-                data={"limit": limit, "around_id": around_id},
-            )
-            # endregion agent log
             return [], False, False, False
 
         half = limit // 2
@@ -1276,22 +1227,6 @@ def _paginate_rows_by_id(
         has_more_after = (
             query.filter(id_column > max_id).limit(1).first() is not None
         )
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H2_around_pagination",
-            location="messaging._paginate_rows_by_id",
-            message="around_id window",
-            data={
-                "limit": limit,
-                "around_id": around_id,
-                "row_count": len(rows),
-                "min_id": min_id,
-                "max_id": max_id,
-                "has_more_before": has_more_before,
-                "has_more_after": has_more_after,
-            },
-        )
-        # endregion agent log
         return rows, has_more_before, has_more_before, has_more_after
 
     if after_id is not None:
@@ -1300,38 +1235,11 @@ def _paginate_rows_by_id(
         has_more_after = len(probe) > limit
         rows = probe[:limit]
         if not rows:
-            # region agent log
-            _agent_debug_log(
-                hypothesis_id="H1_after_pagination",
-                location="messaging._paginate_rows_by_id",
-                message="after_id page empty",
-                data={
-                    "limit": limit,
-                    "after_id": after_id,
-                },
-            )
-            # endregion agent log
             return [], False, False, False
         min_id = getattr(rows[0], "id")
         has_more_before = (
             query.filter(id_column < min_id).limit(1).first() is not None
         )
-        # region agent log
-        _agent_debug_log(
-            hypothesis_id="H1_after_pagination",
-            location="messaging._paginate_rows_by_id",
-            message="after_id page",
-            data={
-                "limit": limit,
-                "after_id": after_id,
-                "row_count": len(rows),
-                "first_id": getattr(rows[0], "id", None),
-                "last_id": getattr(rows[-1], "id", None),
-                "has_more_before": has_more_before,
-                "has_more_after": has_more_after,
-            },
-        )
-        # endregion agent log
         return rows, has_more_after, has_more_before, has_more_after
 
     filtered = query
@@ -1342,21 +1250,6 @@ def _paginate_rows_by_id(
     has_more_before = len(probe) > limit
     rows = probe[:limit]
     rows.reverse()
-    # region agent log
-    _agent_debug_log(
-        hypothesis_id="H3_before_pagination",
-        location="messaging._paginate_rows_by_id",
-        message="before/initial page",
-        data={
-            "limit": limit,
-            "before_id": before_id,
-            "row_count": len(rows),
-            "first_id": getattr(rows[0], "id", None) if rows else None,
-            "last_id": getattr(rows[-1], "id", None) if rows else None,
-            "has_more_before": has_more_before,
-        },
-    )
-    # endregion agent log
     return rows, has_more_before, has_more_before, False
 
 
@@ -1389,22 +1282,6 @@ async def get_messages(
     db: Session = Depends(get_db),
 ):
     page_limit = _normalize_page_limit(limit)
-    # region agent log
-    _agent_debug_log(
-        hypothesis_id="H3_get_messages_params",
-        location="messaging.get_messages",
-        message="incoming get_messages request",
-        data={
-            "client_host": request.client.host if request.client else None,
-            "limit": page_limit,
-            "before_id": before_id,
-            "after_id": after_id,
-            "around_id": around_id,
-            "path": str(request.url.path),
-            "query": str(request.url.query),
-        },
-    )
-    # endregion agent log
     if sum(x is not None for x in (before_id, after_id, around_id)) > 1:
         if around_id is not None:
             before_id = None
@@ -1625,7 +1502,7 @@ def _build_dm_conversation_list(
         unread_count = _count_dm_unread(db, current_user.id, other_user_id, last_read_id)
 
         result.append({
-            "user": convert_user_for_dm_conversation(other_user, db),
+            "user": convert_user_for_dm_conversation(other_user, db, viewer_id=current_user.id),
             "lastMessage": convert_dm_envelope_for_conversation_preview(
                 db, latest_message, current_user.id
             ),
@@ -2347,6 +2224,7 @@ class MessaggingSocketManager:
                 try:
                     became_offline, last_seen = presence_service.unregister_connection(user_id, websocket)
                     if became_offline and last_seen is not None:
+                        await self.clear_typing_for_user(user_id, db)
                         await self.broadcast_status_change(
                             user_id,
                             False,
@@ -2422,8 +2300,9 @@ class MessaggingSocketManager:
             if self.user_by_ws.get(websocket) == user_id and websocket.client_state.name == "CONNECTED":
                 await websocket.send_json(message)
 
-    async def send_suspension_to_user(self, user_id: int, reason: str):
-        """Send suspension message to user's WebSocket connections (as batched update)"""
+    async def send_suspension_to_user(self, user_id: int, reason: str, db: Session | None = None):
+        """Notify the user and clear any hanging typing indicators for peers."""
+        await self.clear_typing_for_user(user_id, db)
         await self.send_update_to_user(user_id, "suspended", {
             "reason": reason
         })
@@ -2432,9 +2311,46 @@ class MessaggingSocketManager:
         """Send unsuspension message to user's WebSocket connections (as batched update)"""
         await self.send_update_to_user(user_id, "unsuspended", {})
 
-    async def send_deletion_to_user(self, user_id: int):
-        """Send account deletion message to user's WebSocket connections (as batched update)"""
+    async def send_deletion_to_user(self, user_id: int, db: Session | None = None):
+        """Notify the user and clear any hanging typing indicators for peers."""
+        await self.clear_typing_for_user(user_id, db)
         await self.send_update_to_user(user_id, "account_deleted", {})
+
+    async def clear_typing_for_user(self, user_id: int, db: Session | None = None):
+        """Force-stop public and DM typing for a user (suspend/delete/disconnect)."""
+        user = None
+        if db is not None:
+            try:
+                user = db.query(User).filter(User.id == user_id).first()
+            except Exception:
+                user = None
+        username = public_display_username(user, fallback=deleted_username_for(user_id))
+
+        was_public_typing = self.typing_state.get(user_id, False)
+        self.typing_users.pop(user_id, None)
+        self.typing_state[user_id] = False
+        if was_public_typing:
+            await self.broadcast({
+                "type": "stopTyping",
+                "data": {
+                    "userId": user_id,
+                    "username": username,
+                },
+            }, db)
+
+        recipients = list(self.dm_typing_users.get(user_id, {}).keys())
+        was_dm = {
+            recipient_id: self.dm_typing_state.get(user_id, {}).get(recipient_id, False)
+            for recipient_id in recipients
+        }
+        self.dm_typing_users.pop(user_id, None)
+        self.dm_typing_state.pop(user_id, None)
+        for recipient_id in recipients:
+            if was_dm.get(recipient_id):
+                await self.send_update_to_user(recipient_id, "stopDmTyping", {
+                    "userId": user_id,
+                    "username": username,
+                }, db)
 
     async def broadcast_status_change(self, user_id: int, online: bool, last_seen: str, db: Session | None = None):
         """Broadcast status change to all connections that are subscribed to this user"""
@@ -2475,7 +2391,7 @@ class MessaggingSocketManager:
                         self.typing_state[user_id] = False
                         # Get username from database
                         user = db.query(User).filter(User.id == user_id).first()
-                        username = user.username if user else "Unknown"
+                        username = public_display_username(user)
                         # Broadcast stop typing
                         await self.broadcast({
                             "type": "stopTyping",
@@ -2508,7 +2424,7 @@ class MessaggingSocketManager:
                             self.dm_typing_state[user_id][recipient_id] = False
                         # Get username from database
                         user = db.query(User).filter(User.id == user_id).first()
-                        username = user.username if user else "Unknown"
+                        username = public_display_username(user)
                         # Send stop typing to recipient
                         await self.send_update_to_user(recipient_id, "stopDmTyping", {
                             "userId": user_id,

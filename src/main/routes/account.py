@@ -28,8 +28,10 @@ from ..validation import is_valid_password, is_valid_username, is_valid_display_
 from ..deleted_user import (
     apply_deleted_user_db_fields,
     deleted_user_api_fields,
+    is_deleted_or_suspended,
     is_deleted_user,
     is_suspended_user,
+    should_redact_for_viewer,
 )
 import os
 
@@ -115,11 +117,11 @@ def _reset_failed_logins(identifier: str) -> None:
 def _is_admin(user: User) -> bool:
     return user.id == 1
 
-def convert_user(user: User, db: Session) -> dict:
+def convert_user(user: User, db: Session, viewer_id: int | None = None) -> dict:
     from ..presence_service import presence_service
     from ..verification_service import compute_verification_status, get_verified_users_data
 
-    if is_deleted_user(user):
+    if should_redact_for_viewer(user, viewer_id):
         return {
             "id": user.id,
             "admin": _is_admin(user),
@@ -148,12 +150,12 @@ def convert_user(user: User, db: Session) -> dict:
     }
 
 
-def convert_user_for_dm_conversation(user: User, db: Session) -> dict:
+def convert_user_for_dm_conversation(user: User, db: Session, viewer_id: int | None = None) -> dict:
     """Minimal user payload for DM conversation list entries."""
     from ..presence_service import presence_service
     from ..verification_service import compute_verification_status, get_verified_users_data
 
-    if is_deleted_user(user):
+    if should_redact_for_viewer(user, viewer_id):
         return {
             "id": user.id,
             **deleted_user_api_fields(user.id),
@@ -650,9 +652,12 @@ def verify_password_endpoint(
 @rate_limit_per_ip("30/minute")  # Per-IP limit to prevent abuse
 def list_users(request: Request, current_user: User = Depends(get_current_user_allow_suspended), db: Session = Depends(get_db)):
     users = db.query(User).order_by(User.username.asc()).all()
+    is_admin = current_user.id == 1
     return {
         "users": [
-            convert_user(u, db) for u in users if u.id != current_user.id
+            convert_user(u, db, viewer_id=current_user.id)
+            for u in users
+            if u.id != current_user.id and (is_admin or not is_deleted_or_suspended(u))
         ]
     }
 
@@ -680,9 +685,14 @@ def search_users(request: Request, q: str, current_user: User = Depends(get_curr
         User.username.ilike(f"%{q.strip()}%"),
         User.id != current_user.id  # Exclude current user
     ).order_by(User.username.asc()).limit(20).all()
-    
+
+    is_admin = current_user.id == 1
     return {
-        "users": [convert_user(u, db) for u in users]
+        "users": [
+            convert_user(u, db, viewer_id=current_user.id)
+            for u in users
+            if is_admin or not is_deleted_or_suspended(u)
+        ]
     }
 
 
@@ -739,7 +749,7 @@ async def _delete_user_data(user: User, db: Session):
     # Send WebSocket deletion message
     try:
         from .messaging import messagingManager
-        await messagingManager.send_deletion_to_user(user_id)
+        await messagingManager.send_deletion_to_user(user_id, db)
     except Exception as e:
         # Log error but don't fail the request
         pass

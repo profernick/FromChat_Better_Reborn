@@ -27,6 +27,17 @@ def is_deleted_or_suspended(user: User) -> bool:
     return is_deleted_user(user) or is_suspended_user(user)
 
 
+def should_redact_for_viewer(user: User, viewer_id: int | None) -> bool:
+    """Hide peer PII from strangers. Self and admin (id 1) still see suspended users."""
+    if is_deleted_user(user):
+        return True
+    if not is_suspended_user(user):
+        return False
+    if viewer_id is None:
+        return True
+    return viewer_id != user.id and viewer_id != 1
+
+
 def apply_deleted_user_db_fields(user: User) -> None:
     user.deleted = True
     user.username = deleted_username_for(user.id)
@@ -55,3 +66,12 @@ def deleted_user_api_fields(user_id: int) -> dict:
         "suspension_reason": None,
         "deleted": True,
     }
+
+
+def public_display_username(user: User | None, fallback: str = "Unknown") -> str:
+    """Username safe to show to peers (deleted/suspended look like deleted)."""
+    if user is None:
+        return fallback
+    if is_deleted_or_suspended(user):
+        return deleted_username_for(user.id)
+    return user.username or fallback

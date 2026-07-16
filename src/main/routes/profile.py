@@ -25,7 +25,7 @@ from .messaging import messagingManager
 from ..security.audit import log_security
 from ..security.profanity import contains_profanity
 from ..security.rate_limit import rate_limit_per_ip
-from ..deleted_user import DELETED_LAST_SEEN, deleted_user_api_fields, is_deleted_user
+from ..deleted_user import DELETED_LAST_SEEN, deleted_user_api_fields, is_deleted_or_suspended, is_deleted_user
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -38,7 +38,7 @@ def _build_user_profile_response(
     *,
     verified_users_data: list[dict[str, str]] | None = None,
 ) -> UserProfileResponse:
-    should_hide_profile = (not is_owner_request) and is_deleted_user(user)
+    should_hide_profile = (not is_owner_request) and is_deleted_or_suspended(user)
     if not should_hide_profile:
         online, last_seen = presence_service.get_presence(user.id)
         verification_status = (
@@ -95,7 +95,6 @@ def _ensure_owner_unsuspended(user: User | None, db: Session):
 async def broadcast_profile_update(user: User, db: Session) -> None:
     """Notify clients subscribed to this user that their public profile changed."""
     try:
-        payload = build_profile_update_payload(user, viewer_id=None, db=db)
         subscriber_count = sum(
             1
             for ws, subs in messagingManager.ws_subscriptions.items()
@@ -107,7 +106,14 @@ async def broadcast_profile_update(user: User, db: Session) -> None:
             user.bio,
             subscriber_count,
         )
-        await messagingManager.broadcast_profile_update(user.id, payload, db)
+        for websocket in list(messagingManager.connections):
+            if websocket not in messagingManager.ws_subscriptions:
+                continue
+            if user.id not in messagingManager.ws_subscriptions[websocket]:
+                continue
+            viewer_id = messagingManager.user_by_ws.get(websocket)
+            payload = build_profile_update_payload(user, viewer_id=viewer_id, db=db)
+            await messagingManager._send_update(websocket, "profileUpdate", payload, db)
     except Exception:
         pass
 
@@ -416,14 +422,19 @@ async def get_user_by_username(
         raise HTTPException(status_code=404, detail="User not found")
 
     _ensure_owner_unsuspended(user, db)
-    
+
     is_owner_request = current_user.id == user.id or current_user.id == 1
+    # Suspended accounts are invisible by username to strangers (same as deleted).
+    if is_deleted_or_suspended(user) and not is_owner_request:
+        raise HTTPException(status_code=404, detail="User not found")
+
     verified_users_data = get_verified_users_data(db)
     return _build_user_profile_response(
         user,
         is_owner_request=is_owner_request,
         verified_users_data=verified_users_data,
     )
+
 
 @router.get("/user/id/{user_id}")
 async def get_user_by_id(
@@ -537,10 +548,12 @@ async def suspend_user(
 
     # Send WebSocket suspension message
     try:
-        await messagingManager.send_suspension_to_user(user_id, request.reason)
+        await messagingManager.send_suspension_to_user(user_id, request.reason, db)
     except Exception as e:
         # Log error but don't fail the request
         pass
+
+    await broadcast_profile_update(target_user, db)
     
     return {
         "status": "success",
@@ -585,6 +598,8 @@ async def unsuspend_user(
         target_username=target_user.username,
         target_id=target_user.id,
     )
+
+    await broadcast_profile_update(target_user, db)
 
     return {
         "status": "success",

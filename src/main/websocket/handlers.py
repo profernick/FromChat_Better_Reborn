@@ -28,6 +28,7 @@ from ..models import (
     UpdateLog,
 )
 from ..routes.profile import build_profile_update_payload
+from ..deleted_user import public_display_username
 from ..security.audit import log_access, log_dm
 
 logger = logging.getLogger("uvicorn.error")
@@ -398,7 +399,7 @@ async def addReaction(manager: MessaggingSocketManager, websocket: WebSocket, db
             "emoji": data["emoji"],
             "action": response["action"],
             "user_id": user.id,
-            "username": user.username,
+            "username": public_display_username(user),
             "reactions": response["reactions"]
         }
     }, db)
@@ -425,7 +426,7 @@ async def addDmReaction(manager: MessaggingSocketManager, websocket: WebSocket, 
             "emoji": data["emoji"],
             "action": response["action"],
             "user_id": user.id,
-            "username": user.username,
+            "username": public_display_username(user),
             "reactions": response["reactions"]
         }
     }, db)
@@ -555,7 +556,7 @@ async def typing(manager: MessaggingSocketManager, websocket: WebSocket, db: Ses
             "type": "typing",
             "data": {
                 "userId": user.id,
-                "username": user.username
+                "username": public_display_username(user)
             }
         }, db)
     
@@ -577,7 +578,7 @@ async def stopTyping(manager: MessaggingSocketManager, websocket: WebSocket, db:
             "type": "stopTyping",
             "data": {
                 "userId": user.id,
-                "username": user.username
+                "username": public_display_username(user)
             }
         }, db)
     
@@ -604,7 +605,7 @@ async def dmTyping(manager: MessaggingSocketManager, websocket: WebSocket, db: S
         # Send only to recipient
         await manager.send_update_to_user(recipient_id, "dmTyping", {
             "userId": user.id,
-            "username": user.username
+            "username": public_display_username(user)
         }, db)
     
     # No confirmation response - privacy protection
@@ -631,7 +632,7 @@ async def stopDmTyping(manager: MessaggingSocketManager, websocket: WebSocket, d
         # Send only to recipient
         await manager.send_update_to_user(recipient_id, "stopDmTyping", {
             "userId": user.id,
-            "username": user.username
+            "username": public_display_username(user)
         }, db)
     
     # No confirmation response - privacy protection
