@@ -23,25 +23,6 @@ from slowapi.middleware import SlowAPIMiddleware
 
 logger = logging.getLogger("uvicorn.error")
 
-def _running_in_docker() -> bool:
-    """
-    Detect whether the process is running inside a Docker container.
-    Uses presence of /.dockerenv or checking cgroup entries for docker/kubernetes.
-    """
-    try:
-        if os.path.exists("/.dockerenv"):
-            return True
-        # Check cgroup for docker/kubepods indicators
-        cgroup_path = "/proc/1/cgroup"
-        if os.path.exists(cgroup_path):
-            with open(cgroup_path, "rt", encoding="utf-8") as f:
-                data = f.read()
-                if "docker" in data or "kubepods" in data or "containerd" in data:
-                    return True
-    except Exception:
-        pass
-    return False
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -141,7 +122,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown - cancel cleanup task if it exists
+    # Shutdown — stop background tasks and force-close WebSockets so Ctrl+C / SIGTERM exits.
+    try:
+        from src.main.routes.messaging import messagingManager
+        await messagingManager.shutdown()
+    except Exception as e:
+        logger.warning("Messaging manager shutdown failed: %s", e)
+
     if cleanup_task:
         cleanup_task.cancel()
         try:
@@ -171,33 +158,6 @@ async def server_instance_id_middleware(request: Request, call_next):
 # Add rate limiting middleware
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
-
-# In development (not running inside Docker), mount messaging and file_storage apps directly
-if not _running_in_docker():
-    try:
-        # Import sub-apps from the services package and mount them to the main app
-        # Try absolute import first, fall back to relative import
-        try:
-            from src.messaging import main as messaging_service_module
-            from src.file_storage import main as file_storage_service_module
-        except (ImportError, ModuleNotFoundError):
-            # Fall back to relative imports when backend is not in path
-            import sys
-            import os
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            services_dir = os.path.dirname(current_dir)
-            backend_dir = os.path.dirname(services_dir)
-            sys.path.insert(0, backend_dir)
-            from src.messaging import main as messaging_service_module
-            from src.file_storage import main as file_storage_service_module
-
-        # Mount as sub-applications so their routes are available in-process for development
-        app.mount("/internal/messaging", messaging_service_module.app)
-        app.mount("/internal/file_storage", file_storage_service_module.app)
-        logger.info("Mounted messaging and file_storage services in development mode")
-    except Exception as e:
-        import traceback
-        logger.warning("Failed to mount internal services for development: %s\n%s", e, traceback.format_exc())
 
 
 def _get_username_for_log(user) -> str | None:
@@ -337,4 +297,4 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8300"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, timeout_graceful_shutdown=5)

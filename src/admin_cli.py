@@ -265,7 +265,11 @@ class AdminCLI:
 
     def cmd_list_blocklist(self) -> None:
         self._require_auth()
-        response = self._request("GET", "moderation/blocklist")
+        try:
+            response = self._request("GET", "moderation/blocklist")
+        except CLIError as err:
+            self.console.print(f"[yellow]{err}[/]")
+            return
         words = response.json().get("words", [])
         if not words:
             self.console.print("[cyan]Blocklist is empty.[/]")
@@ -275,6 +279,14 @@ class AdminCLI:
         for entry in words:
             table.add_row(entry)
         self.console.print(table)
+
+    def cmd_clear_blocklist(self) -> None:
+        self._require_auth()
+        if not self._confirm("Clear the entire chat-filter blocklist?"):
+            self.console.print("[yellow]Cancelled.[/]")
+            return
+        self._request("POST", "moderation/blocklist/clear")
+        self.console.print("[bold green]Blocklist cleared.[/]")
 
     def cmd_unblock_ip(self, args: List[str]) -> None:
         if not args:
@@ -309,7 +321,8 @@ class AdminCLI:
             "unverify <user>": "Remove verification flag.",
             "block-word <words>": "Add words/phrases to chat filter.",
             "unblock-word <words>": "Remove words/phrases from filter.",
-            "blocklist": "Show current blocklist.",
+            "blocklist": "Show current blocklist (if supported).",
+            "clear-blocklist": "Clear the entire chat-filter blocklist.",
             "unblock-ip <ip>": "Unblock an IP address from rate limiting.",
             "clear-all-rate-limits": "Clear all rate limit entries (use with caution).",
             "list": "List all users.",
@@ -372,6 +385,8 @@ class AdminCLI:
                     self.cmd_unblock_word(args)
                 elif command == "blocklist":
                     self.cmd_list_blocklist()
+                elif command == "clear-blocklist":
+                    self.cmd_clear_blocklist()
                 elif command == "unblock-ip":
                     self.cmd_unblock_ip(args)
                 elif command == "clear-all-rate-limits":

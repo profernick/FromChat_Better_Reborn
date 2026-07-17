@@ -36,7 +36,7 @@ from ..deleted_user import (
 import os
 
 from ..security.audit import log_security
-from ..security.profanity import contains_profanity
+from ..security.chat_filter import contains_profanity
 from ..security.rate_limit import rate_limit_per_ip
 from ..key_lifecycle import destroy_message_keys_for_user
 router = APIRouter()
@@ -463,7 +463,7 @@ def get_public_key(current_user: User = Depends(get_current_user_allow_suspended
 
 
 @router.post("/crypto/public-key")
-def set_public_key(payload: dict, current_user: User = Depends(get_current_user_allow_suspended), db: Session = Depends(get_db)):
+def set_public_key(payload: dict, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     pk = payload.get("publicKey")
     if not pk:
         raise HTTPException(status_code=400, detail="publicKey required")
@@ -486,7 +486,7 @@ def get_backup(current_user: User = Depends(get_current_user_allow_suspended), d
 
 
 @router.post("/crypto/backup")
-def set_backup(payload: dict, current_user: User = Depends(get_current_user_allow_suspended), db: Session = Depends(get_db)):
+def set_backup(payload: dict, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     blob = payload.get("blob")
     if not blob:
         raise HTTPException(status_code=400, detail="blob required")
@@ -545,6 +545,18 @@ def _revoke_device_session(db: Session, user_id: int, session_id: str) -> int:
         .filter(
             DeviceSession.user_id == user_id,
             DeviceSession.session_id == session_id,
+        )
+        .update({DeviceSession.revoked: True}, synchronize_session=False)
+    )
+
+
+def revoke_all_user_sessions(db: Session, user_id: int) -> int:
+    """Revoke every device session for a user. Returns rows updated."""
+    return (
+        db.query(DeviceSession)
+        .filter(
+            DeviceSession.user_id == user_id,
+            DeviceSession.revoked.is_(False),
         )
         .update({DeviceSession.revoked: True}, synchronize_session=False)
     )

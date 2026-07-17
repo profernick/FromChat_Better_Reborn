@@ -75,8 +75,8 @@ Python/FastAPI backend for FromChat clients (Android, Web, iOS). Multiple Docker
 
 ### Requirements
 
-- Docker 20.10+ and Compose plugin
-- Python 3.12+ and npm (local scripts / `.env` generation)
+- Docker 20.10+ and Compose plugin (with `watch` support)
+- Python 3.12+ only for `scripts/generate-env.sh` (VAPID / compliance keys)
 - ~2 GB RAM, ~10 GB disk
 
 ### 1. Clone
@@ -91,26 +91,25 @@ cd backend
 There is no `.env.example` — use the generator:
 
 ```bash
-npm install                 # venv + pip install -r requirements.txt
-npm run generate:env        # scripts/generate:env.sh (interactive)
+bash scripts/generate-env.sh
 ```
 
-Typical keys: `JWT_SECRET`, `COMPLIANCE_PUBLIC_KEY`, Postgres passwords (`POSTGRES_PASSWORD`, `MAIN_DB_PASSWORD`, …), `LIVEKIT_*`, `MESSAGE_RETENTION_DAYS`, VAPID, optional `RELEASES_TOKEN` / Firebase.
+Typical keys: `JWT_SECRET`, `COMPLIANCE_PUBLIC_KEY`, Postgres passwords (`POSTGRES_PASSWORD`, `MAIN_DB_PASSWORD`, …), `LIVEKIT_*`, `MESSAGE_RETENTION_DAYS`, VAPID, optional `RELEASES_TOKEN` / Firebase. Chat filter is enabled by default (`CHAT_FILTER_URL` in compose; `ENABLE_CHAT_FILTER=0` to disable).
 
 Also writes `compliance_keypair.txt` — **keep the private key offline**.
 
-### 3. Start the stack
+### 3. Start the stack (development)
 
 ```bash
-npm run docker:up
+bash scripts/dev.sh
 # equivalent:
-docker compose --env-file .env -f compose.yml up --build
+docker compose --env-file .env -f compose.yml up --build --watch
 ```
 
-Tear down (including volumes):
+Stop:
 
 ```bash
-npm run docker:down
+docker compose --env-file .env -f compose.yml down --remove-orphans
 ```
 
 ### 4. Verify
@@ -139,23 +138,6 @@ Place `firebase-cert.json` in the repo root (compose mounts it into the main con
 
 ---
 
-## 🔧 Local development (main only, no Docker)
-
-Prefer Docker for the full stack. Main API alone:
-
-```bash
-npm install
-npm run generate:env   # if .env is missing
-npm run livekit:ensure # if you need calls
-npm run dev            # uvicorn src.main.main:app on :8300 --reload
-```
-
-Messaging and file_storage still need to be started separately (usually via Compose).
-
-Migrations run when Docker images start; for manual runs use Alembic from the container / venv for the relevant service.
-
----
-
 ## 🛠 Troubleshooting
 
 ```bash
@@ -179,7 +161,7 @@ docker compose --env-file .env -f compose.yml down -v
 
 1. Branch for your change
 2. PR with a description
-3. Confirm the stack starts (`npm run docker:up`) and `/health` responds
+3. Confirm the stack starts (`bash scripts/dev.sh`) and `/health` responds
 
 ---
 

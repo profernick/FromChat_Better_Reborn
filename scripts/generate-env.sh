@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# _ENV_TEMPLATE: one KEY=value per line. Use <set> for stdin prompts. Use
-# <gen:…> only where a dedicated step is needed. Any $(command) here runs when
+# _ENV_TEMPLATE: one KEY=value per line. Use <set> for stdin prompts.
+# Use <gen:…> only where a dedicated step is needed. Any $(command) here runs when
 # this script executes (after cd "$ROOT"). Piped stdin order:
 # DEPLOYMENT_SERVER, RELEASES_TOKEN, then commit (y/n),
 # then output .env file path (blank = ../deployment/.env.prod). Writes that file and
@@ -11,6 +11,7 @@
 # Backups use <original-path>.<6-char sha256>.bak (same contents reuse one file). If that
 # name exists with different content, full 64-char hash is used before .bak.
 # Template is read from fd 3 so stdin stays free.
+# Chat filter is on by default; set CHAT_FILTER_URL in compose, or ENABLE_CHAT_FILTER=0 to disable.
 # =============================================================================
 set -euo pipefail
 
@@ -18,14 +19,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
-VENV_PY="${ROOT}/.venv/bin/python3"
+VENV_PY=""
+if [[ -x "${ROOT}/.venv/bin/python3" ]]; then
+  VENV_PY="${ROOT}/.venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+  VENV_PY="$(command -v python3)"
+else
+  echo "generate-env: python3 is required to generate VAPID/compliance keys" >&2
+  exit 1
+fi
+# VAPID + compliance keypair scripts need cryptography (see requirements.txt).
+if ! "$VENV_PY" -c "import cryptography" >/dev/null 2>&1; then
+  echo "generate-env: cryptography is required for VAPID/compliance key generation." >&2
+  if [[ "$VENV_PY" != "${ROOT}/.venv/bin/python3" ]]; then
+    echo "  Create a project venv and install deps:" >&2
+    echo "    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+  else
+    echo "  Install deps: .venv/bin/pip install -r requirements.txt" >&2
+  fi
+  exit 1
+fi
 ENV_PATH=""
 COMPLIANCE_TXT=""
 _COMPLIANCE_PRIVATE_B64=""
 _COMPLIANCE_PUBLIC_B64=""
 
 _ENV_TEMPLATE="$(cat <<EOF
-$(.venv/bin/python3 src/main/generate_vapid_keys.py </dev/null)
+$("$VENV_PY" src/main/generate_vapid_keys.py </dev/null)
 JWT_SECRET=$(openssl rand -base64 32 </dev/null | tr -d '\n')
 COMPLIANCE_PUBLIC_KEY=<gen:compliance>
 DEPLOYMENT_SERVER=<set>
@@ -139,7 +159,7 @@ prompt_set() {
     fi
     print_validation_error "$(validation_hint "$key")"
     if [[ ! -t 0 ]]; then
-      printf '%s\n' "generate:env: invalid value for ${key} (piped stdin); aborting." >&2
+      printf '%s\n' "generate-env: invalid value for ${key} (piped stdin); aborting." >&2
       exit 1
     fi
   done
@@ -189,7 +209,7 @@ run_gen_compliance() {
   } <"$tmp"
   rm -f "$tmp"
   if [[ -z "$_COMPLIANCE_PRIVATE_B64" || -z "$_COMPLIANCE_PUBLIC_B64" ]]; then
-    echo "generate:env: compliance keypair generation failed" >&2
+    echo "generate-env: compliance keypair generation failed" >&2
     exit 1
   fi
   print_kv_row "generated " "$LIME" "COMPLIANCE_PUBLIC_KEY" "$_COMPLIANCE_PUBLIC_B64"
@@ -245,7 +265,7 @@ process_line() {
       run_gen_livekit_secret
       ;;
     *)
-      if [[ "$rhs" == \<gen:* ]]; then
+      if [[ "$rhs" == \<gen:* ]] || [[ "$rhs" == \<ask:* ]]; then
         echo "Unknown template token for ${key}=${rhs}" >&2
         exit 1
       fi

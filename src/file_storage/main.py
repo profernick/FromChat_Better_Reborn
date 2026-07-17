@@ -90,21 +90,28 @@ from pathlib import Path
 from typing import Optional
 from fastapi import UploadFile, File, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
+
+try:
+    from src.shared.public_image_dimensions import (
+        is_placeholder_dimensions,
+        read_image_dimensions_from_path,
+    )
+except ImportError:
+    from src.shared.public_image_dimensions import (  # type: ignore
+        is_placeholder_dimensions,
+        read_image_dimensions_from_path,
+    )
 
 # Base storage directories
 # Prefer absolute paths so relative CWD never drops files into repo-root ./files/.
 # Docker compose mounts ./data/prod/files → /app/files for file_storage (and main).
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _resolve_files_base_dir() -> Path:
     explicit = os.getenv("FILES_DIR") or os.getenv("FILE_STORAGE_DIR")
     if explicit:
         return Path(explicit)
-    if os.getenv("SERVICE_MODE") == "production":
-        return Path("/app/files")
-    return BACKEND_ROOT / "data" / "dev" / "files"
+    return Path("/app/files")
 
 
 BASE_DIR = _resolve_files_base_dir()
@@ -774,6 +781,42 @@ async def store_normal_file(request: Request, file: UploadFile = File(...)):
         tmp_path.unlink(missing_ok=True)
 
 
+@app.post("/uploads/files/encrypted/store", response_model=None)
+async def store_encrypted_file_from_upload(request: Request, file: UploadFile = File(...)):
+    """Store a pre-encrypted attachment uploaded as multipart."""
+    form = await request.form()
+    filename = str(form.get("filename") or file.filename or "file").strip() or "file"
+    content_type = str(form.get("content_type") or file.content_type or "application/octet-stream").strip()
+    raw_allowed = form.get("allowed_user_ids")
+    allowed_user_ids: list[int] = []
+    if raw_allowed is not None and str(raw_allowed).strip():
+        text = str(raw_allowed).strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                allowed_user_ids = [int(x) for x in parsed]
+            else:
+                raise ValueError("not a list")
+        except Exception:
+            allowed_user_ids = [int(x.strip()) for x in text.split(",") if x.strip()]
+
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        data = await file.read()
+        tmp.write(data)
+        tmp_path = Path(tmp.name)
+    try:
+        return await upload_encrypted_file_from_path_internal(
+            filename=filename,
+            source_path=tmp_path,
+            content_type=content_type,
+            allowed_user_ids=allowed_user_ids,
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 # File serving routes (moved from main service)
 async def store_normal_file_from_path_internal(stored_name: str, source_path: Path) -> dict:
     """Copy a plain public-chat attachment into FILES_NORMAL_DIR."""
@@ -863,8 +906,29 @@ async def store_public_image_dimensions_internal(
     return meta
 
 
+def get_normal_file_dimensions_internal(stored_name: str) -> dict | None:
+    """Read pixel size (+ byte size) from the stored normal/public file."""
+    path = get_normal_file_path_internal(stored_name)
+    if path is None:
+        return None
+    file_size = int(path.stat().st_size)
+    dimensions = read_image_dimensions_from_path(path)
+    if dimensions is None or is_placeholder_dimensions(dimensions[0], dimensions[1]):
+        return {"stored_name": Path(stored_name).name, "width": 1, "height": 1, "file_size": file_size}
+    return {
+        "stored_name": Path(stored_name).name,
+        "width": int(dimensions[0]),
+        "height": int(dimensions[1]),
+        "file_size": file_size,
+    }
+
+
 def get_public_thumb_meta_internal(stored_name: str) -> dict | None:
-    """Load thumbnail metadata + base64 JPEG for a normal attachment basename."""
+    """Load thumbnail metadata + base64 JPEG for a normal attachment basename.
+
+    When thumb-meta JSON is missing or has placeholder dimensions, fall back to
+    reading width/height from the stored normal file (same as the old in-process path).
+    """
     import base64
 
     _ensure_dirs()
@@ -873,16 +937,33 @@ def get_public_thumb_meta_internal(stored_name: str) -> dict | None:
         return None
     thumb_path = _thumb_jpeg_path(safe_name)
     meta_path = _thumb_meta_path(safe_name)
-    if not meta_path.is_file():
-        return None
     width, height, file_size = 1, 1, 0
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        width = int(meta.get("width") or 1)
-        height = int(meta.get("height") or 1)
-        file_size = int(meta.get("file_size") or 0)
-    except Exception:
-        pass
+    has_meta = meta_path.is_file()
+    if has_meta:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            width = int(meta.get("width") or 1)
+            height = int(meta.get("height") or 1)
+            file_size = int(meta.get("file_size") or 0)
+        except Exception:
+            pass
+
+    if is_placeholder_dimensions(width, height) or file_size <= 0:
+        file_dims = get_normal_file_dimensions_internal(safe_name)
+        if file_dims is not None:
+            if is_placeholder_dimensions(width, height) and not is_placeholder_dimensions(
+                int(file_dims["width"]), int(file_dims["height"])
+            ):
+                width = int(file_dims["width"])
+                height = int(file_dims["height"])
+            if file_size <= 0:
+                file_size = int(file_dims.get("file_size") or 0)
+        elif not has_meta and not thumb_path.is_file():
+            return None
+
+    if not has_meta and is_placeholder_dimensions(width, height) and not thumb_path.is_file():
+        return None
+
     thumbnail_b64 = ""
     if thumb_path.is_file():
         jpeg = thumb_path.read_bytes()
@@ -931,25 +1012,28 @@ def get_normal_file_path_internal(stored_name: str) -> Path | None:
     return path if path.is_file() else None
 
 
-def read_image_dimensions_from_path(path: Path) -> list[int] | None:
-    try:
-        from ..main.public_image_dimensions import read_image_dimensions_from_path as read_dims
-    except ImportError:
-        try:
-            from src.main.public_image_dimensions import (
-                read_image_dimensions_from_path as read_dims,
-            )
-        except ImportError:
-            from src.main.public_image_dimensions import (
-                read_image_dimensions_from_path as read_dims,
-            )
-    return read_dims(path)
+@app.get("/uploads/files/normal/{stored_name}/dimensions", response_model=None)
+async def get_normal_file_dimensions(stored_name: str):
+    """Return image dimensions (+ byte size) from the stored normal/public file."""
+    result = get_normal_file_dimensions_internal(stored_name)
+    if result is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return result
 
 
 @app.get("/uploads/files/normal/{filename}", response_model=None)
 async def get_file_normal(filename: str):
     """Serve normal (unencrypted) files."""
     return await get_file_normal_internal(filename)
+
+
+@app.get("/uploads/files/thumbs/meta/{stored_name}", response_model=None)
+async def get_public_thumb_meta(stored_name: str):
+    """Return thumbnail metadata (+ base64 JPEG when present) for a public attachment."""
+    meta = get_public_thumb_meta_internal(stored_name)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Thumbnail meta not found")
+    return meta
 
 
 @app.get("/uploads/files/thumbs/{filename}", response_model=None)
@@ -1022,4 +1106,4 @@ async def get_file_encrypted(filename: str, request: Request):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8302"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, timeout_graceful_shutdown=5)

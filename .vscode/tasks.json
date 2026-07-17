@@ -4,7 +4,7 @@
         {
             "label": "Backend",
             "type": "shell",
-            "command": "npm run dev",
+            "command": "bash ./scripts/dev.sh",
             "options": {
                 "cwd": "${workspaceFolder}"
             },
@@ -17,26 +17,18 @@
             "group": {
                 "kind": "build"
             },
-            "isBackground": true
-        },
-        {
-            "label": "LiveKit",
-            "type": "shell",
-            "command": "npm run livekit:run",
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared"
-            },
-            "group": {
-                "kind": "build"
-            },
-            "isBackground": true
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "fromchat-backend",
+                "pattern": {
+                    "regexp": "^$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".",
+                    "endsPattern": "(Watch enabled|watching|Started|Uvicorn running|Application startup complete)"
+                }
+            }
         }
     ]
 }
-

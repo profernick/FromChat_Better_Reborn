@@ -57,8 +57,8 @@ Python/FastAPI бэкенд для клиентов FromChat (Android, Web, iOS)
 
 ### Требования
 
-- Docker 20.10+ и Compose plugin
-- Python 3.12+ и npm (для local scripts / генерации `.env`)
+- Docker 20.10+ и Compose plugin (с поддержкой `watch`)
+- Python 3.12+ только для `scripts/generate-env.sh` (ключи VAPID / compliance)
 - ~2 GB RAM, ~10 GB диск
 
 ### 1. Клонировать
@@ -73,26 +73,25 @@ cd backend
 Файла `.env.example` нет — переменные создаёт генератор:
 
 ```bash
-npm install                 # venv + pip install -r requirements.txt
-npm run generate:env        # scripts/generate:env.sh (интерактивно)
+bash scripts/generate-env.sh
 ```
 
-Типичные ключи: `JWT_SECRET`, `COMPLIANCE_PUBLIC_KEY`, пароли Postgres (`POSTGRES_PASSWORD`, `MAIN_DB_PASSWORD`, …), `LIVEKIT_*`, `MESSAGE_RETENTION_DAYS`, VAPID, опционально `RELEASES_TOKEN` / Firebase.
+Типичные ключи: `JWT_SECRET`, `COMPLIANCE_PUBLIC_KEY`, пароли Postgres (`POSTGRES_PASSWORD`, `MAIN_DB_PASSWORD`, …), `LIVEKIT_*`, `MESSAGE_RETENTION_DAYS`, VAPID, опционально `RELEASES_TOKEN` / Firebase. Фильтр чата включён по умолчанию (`CHAT_FILTER_URL` в compose; `ENABLE_CHAT_FILTER=0` чтобы выключить).
 
 Также пишется `compliance_keypair.txt` — **приватный ключ храните офлайн**.
 
-### 3. Поднять стек
+### 3. Поднять стек (разработка)
 
 ```bash
-npm run docker:up
+bash scripts/dev.sh
 # то же самое:
-docker compose --env-file .env -f compose.yml up --build
+docker compose --env-file .env -f compose.yml up --build --watch
 ```
 
-Остановить с удалением томов:
+Остановить:
 
 ```bash
-npm run docker:down
+docker compose --env-file .env -f compose.yml down --remove-orphans
 ```
 
 ### 4. Проверка
@@ -119,22 +118,6 @@ docker compose --env-file .env -f compose.yml -f compose.prod.yml up -d
 
 Положите `firebase-cert.json` в корень репозитория (compose монтирует его в контейнер main).
 
-## 🔧 Локальная разработка (только main, без Docker)
-
-Для полного стека используйте Docker. Main API отдельно:
-
-```bash
-npm install
-npm run generate:env   # если ещё нет .env
-npm run livekit:ensure # при необходимости звонков
-npm run dev            # uvicorn src.main.main:app на :8300 --reload
-```
-
-Messaging и file_storage в этом режиме нужно поднимать отдельно (обычно через Compose).
-
-Миграции в Docker применяются при старте образов; для ручного запуска используйте Alembic из контейнера / venv по вашей схеме сервиса.
-
-
 ## 🛠 Устранение неполадок
 
 ```bash
@@ -156,7 +139,7 @@ docker compose --env-file .env -f compose.yml down -v
 
 1. Ветка под изменение
 2. PR с описанием
-3. Проверьте, что стек поднимается (`npm run docker:up`) и `/health` отвечает
+3. Проверьте, что стек поднимается (`bash scripts/dev.sh`) и `/health` отвечает
 
 ## 📄 Лицензия
 

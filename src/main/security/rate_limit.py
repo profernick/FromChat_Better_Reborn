@@ -229,4 +229,7 @@ async def start_rate_limit_cleanup_task() -> None:
             break
         except Exception as e:
             logger.error(f"Error in rate limit cleanup task: {e}")
-            await asyncio.sleep(60)  # Wait 1 minute before retrying
+            try:
+                await asyncio.sleep(60)  # Wait 1 minute before retrying
+            except asyncio.CancelledError:
+                break

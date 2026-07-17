@@ -6,7 +6,12 @@ from ..constants import OWNER_USERNAME
 from ..dependencies import get_current_user
 from ..models import User
 from ..security.audit import log_security
-from ..security.profanity import add_to_blocklist, get_blocklist, remove_from_blocklist
+from ..security.chat_filter import (
+    add_to_blocklist,
+    clear_blocklist,
+    get_blocklist,
+    remove_from_blocklist,
+)
 from ..security.rate_limit import reset_rate_limit_for_ip, clear_all_rate_limits
 
 
@@ -64,6 +69,18 @@ def delete_from_blocklist(
     return {"removed": removed, "words": updated}
 
 
+@router.post("/blocklist/clear")
+def clear_blocklist_endpoint(current_user: User = Depends(get_current_user)):
+    _ensure_owner(current_user)
+    updated = clear_blocklist()
+    log_security(
+        "blocklist_clear",
+        actor=current_user.username,
+        actor_id=current_user.id,
+    )
+    return {"words": updated}
+
+
 @router.post("/unblock-ip")
 def unblock_ip(
     request: UnblockIPRequest,
@@ -109,6 +126,3 @@ def clear_all_rate_limits_endpoint(
     )
     
     return {"status": "success", "message": f"Cleared {cleared} rate limit entries"}
-
-
-

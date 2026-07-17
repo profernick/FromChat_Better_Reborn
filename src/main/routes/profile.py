@@ -23,7 +23,7 @@ from ..verification_service import (
 )
 from .messaging import messagingManager
 from ..security.audit import log_security
-from ..security.profanity import contains_profanity
+from ..security.chat_filter import contains_profanity
 from ..security.rate_limit import rate_limit_per_ip
 from ..deleted_user import DELETED_LAST_SEEN, deleted_user_api_fields, is_deleted_or_suspended, is_deleted_user
 
@@ -345,6 +345,11 @@ async def update_user_profile(
         bio = update_request.description.strip()
         if len(bio) > 500:
             raise HTTPException(status_code=400, detail="Bio must be 500 characters or less")
+        if bio and contains_profanity(bio):
+            raise HTTPException(
+                status_code=400,
+                detail="Описание содержит запрещённые слова",
+            )
         
         current_user.bio = bio
         updated = True
@@ -381,8 +386,15 @@ async def update_user_bio(
     """
     if len(bio_request.bio) > 500:  # Limit bio to 500 characters
         raise HTTPException(status_code=400, detail="Bio must be 500 characters or less")
-    
-    current_user.bio = bio_request.bio.strip()
+
+    bio = bio_request.bio.strip()
+    if bio and contains_profanity(bio):
+        raise HTTPException(
+            status_code=400,
+            detail="Описание содержит запрещённые слова",
+        )
+
+    current_user.bio = bio
     db.commit()
     db.refresh(current_user)
 
@@ -456,6 +468,10 @@ async def get_user_by_id(
     _ensure_owner_unsuspended(user, db)
     
     is_owner_request = current_user.id == user.id or current_user.id == 1
+    # Suspended accounts are invisible by id to strangers (same as username / deleted).
+    if is_deleted_or_suspended(user) and not is_owner_request:
+        raise HTTPException(status_code=404, detail="User not found")
+
     verified_users_data = get_verified_users_data(db)
     return _build_user_profile_response(
         user,
@@ -535,6 +551,8 @@ async def suspend_user(
     # Suspend the user
     target_user.suspended = True
     target_user.suspension_reason = request.reason
+    from .account import revoke_all_user_sessions
+    revoke_all_user_sessions(db, target_user.id)
     db.commit()
     
     log_security(
@@ -546,11 +564,11 @@ async def suspend_user(
         reason=request.reason,
     )
 
-    # Send WebSocket suspension message
+    # Notify, then drop WebSocket connections so stale auth cannot keep sending
     try:
         await messagingManager.send_suspension_to_user(user_id, request.reason, db)
-    except Exception as e:
-        # Log error but don't fail the request
+        await messagingManager.disconnect_user(user_id, code=4003, reason="Account suspended")
+    except Exception:
         pass
 
     await broadcast_profile_update(target_user, db)

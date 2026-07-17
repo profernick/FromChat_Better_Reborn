@@ -76,7 +76,7 @@ def main():
     parser.add_argument(
         "--emit-key-lines",
         action="store_true",
-        help="Print private key line then public key line to stdout only (no file; for generate:env.sh)",
+        help="Print private key line then public key line to stdout only (no file; for generate-env.sh)",
     )
 
     args = parser.parse_args()

@@ -23,13 +23,9 @@ def extract_token_from_data(data: dict) -> str | None:
 
 def get_current_user_from_token(token: str, db: Session) -> User | None:
     """Get user from authentication token.
-    
-    Args:
-        token: JWT token string
-        db: Database session
-        
-    Returns:
-        User object or None if token is invalid
+
+    Re-raises HTTP 403 (suspended/deleted) so WebSocket handlers can surface them.
+    Returns None only for missing/invalid credentials (401-class failures).
     """
     try:
         # Ensure session is in a usable state before querying
@@ -37,21 +33,19 @@ def get_current_user_from_token(token: str, db: Session) -> User | None:
             db.rollback()
         except Exception:
             pass
-        
+
         dummy_request = SimpleNamespace()
         dummy_request.state = SimpleNamespace()
-        
-        try:
-            from fastapi.security import HTTPBearer
-            security = HTTPBearer()
-            # We need to create credentials manually
-            credentials = HTTPAuthorizationCredentials(
-                scheme="Bearer",
-                credentials=token
-            )
-            return get_current_user(dummy_request, credentials, db)
-        except HTTPException:
-            return None
+
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer",
+            credentials=token,
+        )
+        return get_current_user(dummy_request, credentials, db)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise
+        return None
     except Exception:
         try:
             db.rollback()
@@ -73,20 +67,20 @@ def authenticate_user(data: dict, db: Session, authRequired: bool) -> User | Non
         
     Raises:
         HTTPException: 401 if authRequired=True and token is missing/invalid
+        HTTPException: 403 if account is suspended/deleted
     """
     token = extract_token_from_data(data)
-    
+
     if authRequired:
         if not token:
             raise HTTPException(status_code=401, detail="Missing credentials")
-        
+
         user = get_current_user_from_token(token, db)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
+
         return user
     else:
         if token:
             return get_current_user_from_token(token, db)
         return None
-

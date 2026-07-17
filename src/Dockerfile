@@ -60,11 +60,6 @@ FROM base AS file_storage
 
 COPY src/file_storage/ ./src/file_storage/
 COPY src/shared/ ./src/shared/
-COPY src/main/db.py ./src/main/
-COPY src/main/dependencies.py ./src/main/
-COPY src/main/models.py ./src/main/
-COPY src/main/constants.py ./src/main/
-COPY src/main/utils.py ./src/main/
 
 RUN mkdir -p /app/files /app/logs && \
     chown -R filestorage:filestorage /app && \
@@ -79,3 +74,24 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 EXPOSE ${PORT:-8302}
 
 CMD ["sh", "-c", "chown -R filestorage:filestorage /app/files /app/logs && exec setpriv --reuid=filestorage --regid=filestorage --init-groups -- python -m src.file_storage.main"]
+
+FROM base AS chat_filter
+
+RUN useradd -u 1003 -m chatfilter
+
+COPY src/chat_filter/ ./src/chat_filter/
+COPY src/shared/ ./src/shared/
+
+RUN mkdir -p /data && \
+    chown -R chatfilter:chatfilter /app /data
+
+USER chatfilter
+
+ENV DATA_DIR=/data
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python3 /usr/local/bin/healthcheck.py
+
+EXPOSE ${PORT:-8305}
+
+CMD ["python", "-m", "src.chat_filter.main"]

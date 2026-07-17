@@ -147,6 +147,16 @@ async def sendMessage(manager: MessaggingSocketManager, websocket: WebSocket, db
 @websocket_handler("dmSend", authRequired=True)
 async def dmSend(manager: MessaggingSocketManager, websocket: WebSocket, db: Session, user: User, data: dict) -> dict | None:
     """Send a direct message using the new envelope encryption format."""
+    db.refresh(user)
+    if user.suspended:
+        raise HTTPException(
+            status_code=403,
+            detail="Account suspended",
+            headers={"suspension_reason": user.suspension_reason or "No reason provided"},
+        )
+    if user.deleted:
+        raise HTTPException(status_code=403, detail="Account deleted")
+
     payload = data
     required = ["recipientId", "iv_b64", "ciphertext_b64", "wrapped_mek_b64"]
     for key in required:
@@ -247,6 +257,16 @@ async def editMessage(manager: MessaggingSocketManager, websocket: WebSocket, db
 @websocket_handler("dmEdit", authRequired=True)
 async def dmEdit(manager: MessaggingSocketManager, websocket: WebSocket, db: Session, user: User, data: dict) -> dict | None:
     """Edit a direct message."""
+    db.refresh(user)
+    if user.suspended:
+        raise HTTPException(
+            status_code=403,
+            detail="Account suspended",
+            headers={"suspension_reason": user.suspension_reason or "No reason provided"},
+        )
+    if user.deleted:
+        raise HTTPException(status_code=403, detail="Account deleted")
+
     payload = data
     env_id = int(payload["id"])
     env: DMEnvelope | None = db.query(DMEnvelope).filter(DMEnvelope.id == env_id).first()

@@ -1,5 +1,3 @@
-# Production edge proxy (TLS). Merged by deploy/publish/install when the caddy component is selected.
-# Local dev: docker compose -f compose.yml -f compose.prod.yml up -d
 services:
   caddy:
     build:
@@ -24,7 +22,6 @@ services:
       dockerfile: Dockerfile
     # Host network so UFW can filter 80/443 (Docker-published ports bypass UFW).
     network_mode: host
-    # Image defaults to user haproxy; need root to bind :80/:443, then cfg drops privileges.
     user: "0:0"
     depends_on:
       - caddy

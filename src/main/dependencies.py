@@ -42,7 +42,15 @@ def _get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = db.query(User).filter(User.id == payload["user_id"]).first()
+
+    # Always re-load from DB (populate_existing) so long-lived WebSocket sessions
+    # cannot keep a stale User.suspended=False after an admin ban.
+    user = (
+        db.query(User)
+        .execution_options(populate_existing=True)
+        .filter(User.id == payload["user_id"])
+        .first()
+    )
     if not user:
         logger.info("get_current_user: user not found for user_id=%s", payload.get("user_id"))
         raise HTTPException(
@@ -68,6 +76,7 @@ def _get_current_user(
 
     device_session = (
         db.query(DeviceSession)
+        .execution_options(populate_existing=True)
         .filter(DeviceSession.user_id == user.id, DeviceSession.session_id == session_id)
         .first()
     )
@@ -94,11 +103,10 @@ def _get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Touch last_seen on valid session (sliding expiration - extends token life)
-    device_session.last_seen = datetime.now()
-    db.commit()
+    # Re-read suspension/deletion after session checks (ban may have landed mid-request)
+    db.refresh(user)
 
-    # Check if user is suspended
+    # Check if user is suspended (before touching last_seen)
     if user.suspended and not allow_suspended:
         logger.info("get_current_user: account suspended for user_id=%s reason=%s", user.id, user.suspension_reason)
         raise HTTPException(
@@ -114,6 +122,10 @@ def _get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account deleted",
         )
+
+    # Touch last_seen on valid session (sliding expiration - extends token life)
+    device_session.last_seen = datetime.now()
+    db.commit()
 
     request.state.current_user = user
     request.state.session_id = session_id

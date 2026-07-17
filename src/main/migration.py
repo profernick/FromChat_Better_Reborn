@@ -55,16 +55,6 @@ def _load_models_base():
     mod = _load_module_by_filename("models.py", "services_main_models")
     return getattr(mod, "Base")
 
-
-def _ensure_sqlite_directory():
-    """Ensure parent directory for SQLite DB exists when using sqlite:/// URLs."""
-    if not DATABASE_URL or not DATABASE_URL.startswith("sqlite"):
-        return
-    # strip sqlite:/// prefix
-    db_path = DATABASE_URL.replace("sqlite:///", "", 1)
-    parent = os.path.dirname(db_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -85,16 +75,13 @@ def run_migrations():
     Fully automated - handles all scenarios automatically.
     """
     try:
-        # FIRST: Ensure SQLite directory exists before creating engine
-        _ensure_sqlite_directory()
-        
         # Check if database has any application tables (excluding alembic_version)
         engine = _create_engine_with_retry()
         with engine.connect() as connection:
             from sqlalchemy import inspect
             inspector = inspect(connection)
             existing_tables = [table for table in inspector.get_table_names()
-                             if not table.startswith('sqlite_') and table != 'alembic_version']
+                             if table != 'alembic_version']
 
         # If no application tables exist, create them directly from models
         if not existing_tables:
@@ -137,14 +124,10 @@ def run_migrations():
             engine = _create_engine_with_retry()
             with engine.connect() as connection:
                 from sqlalchemy import text
-                # Check for PostgreSQL or SQLite
-                if 'postgresql' in DATABASE_URL.lower():
-                    result = connection.execute(text("""
-                        SELECT tablename as name FROM pg_tables
-                        WHERE schemaname = 'public' AND tablename != 'alembic_version'
-                    """))
-                else:
-                    result = connection.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name != 'alembic_version'"))
+                result = connection.execute(text("""
+                    SELECT tablename as name FROM pg_tables
+                    WHERE schemaname = 'public' AND tablename != 'alembic_version'
+                """))
                 existing_tables = result.fetchall()
                 
                 if existing_tables:
@@ -562,7 +545,6 @@ def _get_column_type(column):
 def _create_database_directly():
     """Fallback method: create database directly using SQLAlchemy."""
     # Load Base and engine in a robust way (work when run as script or package)
-    _ensure_sqlite_directory()
     Base = _load_models_base()
     from sqlalchemy import text, inspect
     engine = create_engine(DATABASE_URL)
@@ -588,7 +570,7 @@ def _create_database_directly():
                             sql_type = _get_sql_type(column)
                             nullable = "NULL" if column.nullable else "NOT NULL"
                             
-                            # Handle datetime columns without default (SQLite limitation)
+                            # Handle datetime columns without default
                             if column.type.__class__.__name__ == 'DateTime':
                                 # Add column without default, then update existing rows
                                 alter_sql = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {sql_type} {nullable}"
@@ -607,7 +589,6 @@ def _create_database_directly():
                                 default_clause = ""
                                 if column.default is not None:
                                     if hasattr(column.default, 'arg') and callable(column.default.arg):
-                                        # Skip callable defaults for SQLite compatibility
                                         pass
                                     elif hasattr(column.default, 'arg'):
                                         default_clause = f" DEFAULT {repr(column.default.arg)}"
@@ -646,31 +627,18 @@ def _create_database_directly():
                 revision_match = re.search(r"revision: str = '([^']+)'", content)
                 if revision_match:
                     revision_id = revision_match.group(1)
-                    if 'postgresql' in DATABASE_URL.lower():
-                        connection.execute(text(f"INSERT INTO alembic_version (version_num) VALUES ('{revision_id}') ON CONFLICT DO NOTHING"))
-                    else:
-                        connection.execute(text(f"INSERT OR IGNORE INTO alembic_version (version_num) VALUES ('{revision_id}')"))
+                    connection.execute(text(f"INSERT INTO alembic_version (version_num) VALUES ('{revision_id}') ON CONFLICT DO NOTHING"))
                 else:
-                    if 'postgresql' in DATABASE_URL.lower():
-                        connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('direct_creation') ON CONFLICT DO NOTHING"))
-                    else:
-                        connection.execute(text("INSERT OR IGNORE INTO alembic_version (version_num) VALUES ('direct_creation')"))
+                    connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('direct_creation') ON CONFLICT DO NOTHING"))
         else:
-            if 'postgresql' in DATABASE_URL.lower():
-                connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('direct_creation') ON CONFLICT DO NOTHING"))
-            else:
-                connection.execute(text("INSERT OR IGNORE INTO alembic_version (version_num) VALUES ('direct_creation')"))
+            connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('direct_creation') ON CONFLICT DO NOTHING"))
         
         connection.commit()
 
 
 def _get_sql_type(column):
-    """Get SQL type for direct SQL execution."""
+    """Get SQL type for direct SQL execution (PostgreSQL)."""
     from sqlalchemy import String, Integer, Text, Boolean, DateTime
-    import os
-
-    # Check if we're using PostgreSQL
-    is_postgres = 'postgresql' in os.getenv('DATABASE_URL', '').lower()
 
     if isinstance(column.type, String):
         if column.type.length:
@@ -684,7 +652,7 @@ def _get_sql_type(column):
     elif isinstance(column.type, Boolean):
         return "BOOLEAN"
     elif isinstance(column.type, DateTime):
-        return "TIMESTAMP" if is_postgres else "DATETIME"
+        return "TIMESTAMP"
     else:
         return "TEXT"  # fallback
 
@@ -700,10 +668,12 @@ def check_migration_status():
         
         # Check if alembic_version table exists
         with engine.connect() as connection:
-            # Check if alembic_version table exists
             from sqlalchemy import text
             result = connection.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'")
+                text("""
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'alembic_version'
+                """)
             )
             alembic_table_exists = result.fetchone() is not None
             

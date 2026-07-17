@@ -8,9 +8,9 @@ services:
       - .env
     environment:
       PORT: 8300
-      SERVICE_MODE: production
       MESSAGING_SERVICE_URL: http://messaging:8301
       FILE_STORAGE_SERVICE_URL: http://file_storage:8302
+      CHAT_FILTER_URL: http://chat_filter:8305
       DATABASE_URL: postgresql://main_user:${MAIN_DB_PASSWORD}@postgres:5432/fromchat_main
       MAIN_DB_PASSWORD: ${MAIN_DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
@@ -24,17 +24,13 @@ services:
       - "8300:8300"
     volumes:
       - ./data/prod:/app/data
-      # Same bind as file_storage so in-process thumbs/uploads land under data/prod/files.
       - ./data/prod/files:/app/files
       - ./firebase-cert.json:/app/firebase-cert.json:ro
     networks:
       - public
       - services
-    depends_on:
-      postgres:
-        condition: service_healthy
-      livekit:
-        condition: service_started
+    # No depends_on: Compose watch recreates deps and can leave them stuck in Created
+    # (docker/compose#13717). Backend retries DB; other services tolerate brief unavailability.
     healthcheck:
       test: ["CMD", "python3", "/usr/local/bin/healthcheck.py"]
       interval: 3s
@@ -51,8 +47,18 @@ services:
         - action: sync+restart
           path: ./src/shared
           target: /app/src/shared
+        - action: sync+restart
+          path: ./alembic
+          target: /app/alembic
+        - action: sync+restart
+          path: ./alembic.ini
+          target: /app/alembic.ini
         - action: rebuild
           path: ./requirements.txt
+        - action: rebuild
+          path: ./src/Dockerfile
+        - action: rebuild
+          path: ./utils
 
   messaging:
     build:
@@ -63,20 +69,12 @@ services:
       - .env
     environment:
       PORT: 8301
-      SERVICE_MODE: production
-      DATABASE_URL: postgresql://messaging_user:${MESSAGING_DB_PASSWORD}@postgres:5432/fromchat_messaging
-      MESSAGING_DB_PASSWORD: ${MESSAGING_DB_PASSWORD}
       COMPLIANCE_PUBLIC_KEY: ${COMPLIANCE_PUBLIC_KEY}
       MESSAGE_RETENTION_DAYS: ${MESSAGE_RETENTION_DAYS}
     volumes:
       - ./data/prod/logs/messaging:/app/logs
     networks:
       - services
-    depends_on:
-      postgres:
-        condition: service_healthy
-      backend:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "/usr/local/bin/healthcheck.py"]
       interval: 30s
@@ -93,6 +91,10 @@ services:
           target: /app/src/shared
         - action: rebuild
           path: ./requirements.txt
+        - action: rebuild
+          path: ./src/Dockerfile
+        - action: rebuild
+          path: ./utils
 
   file_storage:
     build:
@@ -103,20 +105,12 @@ services:
       - .env
     environment:
       PORT: 8302
-      SERVICE_MODE: production
-      DATABASE_URL: postgresql://file_storage_user:${FILE_STORAGE_DB_PASSWORD}@postgres:5432/fromchat_files
-      FILE_STORAGE_DB_PASSWORD: ${FILE_STORAGE_DB_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
+      FILES_DIR: /app/files
     volumes:
       - ./data/prod/files:/app/files
       - ./data/prod/logs/file_storage:/app/logs
     networks:
       - services
-    depends_on:
-      postgres:
-        condition: service_healthy
-      backend:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "/usr/local/bin/healthcheck.py"]
       interval: 30s
@@ -133,6 +127,45 @@ services:
           target: /app/src/shared
         - action: rebuild
           path: ./requirements.txt
+        - action: rebuild
+          path: ./src/Dockerfile
+        - action: rebuild
+          path: ./utils
+
+  chat_filter:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+      target: chat_filter
+    environment:
+      PORT: 8305
+      DATA_DIR: /data
+    volumes:
+      - ./data/prod/chat_filter:/data
+      # One-time migrate: old main DATA_DIR/profanity/blocklist.json → /data/blocklist.json
+      - ./data/prod/profanity:/legacy/profanity:ro
+    networks:
+      - services
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./src/chat_filter
+          target: /app/src/chat_filter
+        - action: sync+restart
+          path: ./src/shared
+          target: /app/src/shared
+        - action: rebuild
+          path: ./requirements.txt
+        - action: rebuild
+          path: ./src/Dockerfile
+        - action: rebuild
+          path: ./utils
 
   livekit:
     build:
@@ -167,7 +200,7 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - ./data/prod/postgres:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
     networks:
       - services
     healthcheck:
@@ -184,3 +217,4 @@ networks:
   services:
     driver: bridge
     internal: true
+

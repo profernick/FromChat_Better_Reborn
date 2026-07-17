@@ -18,11 +18,11 @@ from sqlalchemy.orm import Session
 from ..dependencies import get_current_user, get_current_user_allow_suspended, get_db
 from .account import convert_user_for_dm_conversation
 from ..deleted_user import deleted_username_for, is_deleted_or_suspended, is_deleted_user, is_suspended_user, public_display_username
-from ..constants import OWNER_USERNAME, DATA_DIR
+from ..constants import OWNER_USERNAME, DATA_DIR, FILE_STORAGE_SERVICE_URL
 from ..models import Message, SendMessageRequest, EditMessageRequest, User, DMEnvelope, DmConversationPreference, MessageFile, DMFile, Reaction, ReactionRequest, ReactionResponse, DMReaction, DMReactionRequest, DMReactionResponse, UpdateLog, MessageEditHistory, MessageEditHistoryResponse
 from ..presence_service import presence_service
 from ..push_service import push_service
-from ..public_image_dimensions import (
+from src.shared.public_image_dimensions import (
     is_placeholder_dimensions,
     read_image_dimensions_from_bytes,
     read_image_dimensions_from_path,
@@ -31,9 +31,8 @@ from PIL import Image, ImageOps
 import io
 import json
 from pydantic import BaseModel
-from better_profanity import profanity as _bp
 from ..security.audit import log_access, log_dm, log_public_chat, log_security
-from ..security.profanity import contains_profanity
+from ..security.chat_filter import contains_profanity
 from ..security.rate_limit import rate_limit_per_ip
 from ..verification_service import (
     VerificationStatus,
@@ -86,29 +85,40 @@ def _generate_public_thumbnail(image_bytes: bytes) -> tuple[bytes | None, list[i
         return None, [1, 1]
 
 
-def _resolve_public_file_media(mod, stored_name: str, original_name: str) -> tuple[str, list[int], int]:
+def _resolve_public_file_media(stored_name: str, original_name: str) -> tuple[str, list[int], int]:
     """Return (thumbnail_b64, [width, height], file_size). Never emits placeholder [1, 1]."""
     thumb_b64 = ""
     size = 0
     dimensions: list[int] | None = None
 
-    if mod is not None:
-        try:
-            meta = mod.get_public_thumb_meta_internal(stored_name)
-        except Exception as error:
-            logger.warning("PUBLIC THUMB: meta load failed for %s: %s", stored_name, error)
-            meta = None
-        if meta:
-            thumb_b64 = str(meta.get("thumbnail_b64") or "")
-            size = int(meta.get("file_size") or 0)
+    try:
+        meta = service_calls.get_public_thumb_meta_in_storage_sync(stored_name)
+    except Exception as error:
+        logger.warning("PUBLIC THUMB: meta load failed for %s: %s", stored_name, error)
+        meta = None
+    if meta:
+        thumb_b64 = str(meta.get("thumbnail_b64") or "")
+        size = int(meta.get("file_size") or 0)
+        width = int(meta.get("width") or 1)
+        height = int(meta.get("height") or 1)
+        if not is_placeholder_dimensions(width, height):
+            dimensions = [width, height]
 
-        path = mod.get_normal_file_path_internal(stored_name)
-        if path is not None:
-            fresh = mod.read_image_dimensions_from_path(path)
-            if fresh is not None and not is_placeholder_dimensions(fresh[0], fresh[1]):
-                dimensions = fresh
+    # Fallback: read dimensions from the stored normal file (via file_storage HTTP).
+    if dimensions is None or size <= 0:
+        try:
+            file_dims = service_calls.get_normal_file_dimensions_in_storage_sync(stored_name)
+        except Exception as error:
+            logger.warning("PUBLIC THUMB: file dimensions load failed for %s: %s", stored_name, error)
+            file_dims = None
+        if file_dims:
+            if dimensions is None:
+                width = int(file_dims.get("width") or 1)
+                height = int(file_dims.get("height") or 1)
+                if not is_placeholder_dimensions(width, height):
+                    dimensions = [width, height]
             if size <= 0:
-                size = int(path.stat().st_size)
+                size = int(file_dims.get("file_size") or 0)
 
     if dimensions is None and Path(original_name).suffix.lower() in _IMAGE_EXTENSIONS:
         logger.error("PUBLIC THUMB: could not resolve dimensions for %s", stored_name)
@@ -124,13 +134,12 @@ def _public_attachment_media_fields_sync(msg: Message) -> dict:
     files = list(msg.files or [])
     if not files:
         return {}
-    mod = service_calls._get_file_storage_module()
     thumbnails: list[str] = []
     aspect_ratios: list[list[int]] = []
     sizes: list[int] = []
     for f in files:
         stored_name = Path(f.path).name
-        thumb_b64, dimensions, size = _resolve_public_file_media(mod, stored_name, f.name)
+        thumb_b64, dimensions, size = _resolve_public_file_media(stored_name, f.name)
         thumbnails.append(thumb_b64)
         aspect_ratios.append(dimensions)
         sizes.append(size)
@@ -142,11 +151,7 @@ def _public_attachment_media_fields_sync(msg: Message) -> dict:
 
 
 def _get_file_storage_url() -> str:
-    return (
-        os.getenv("FILE_STORAGE_SERVICE_URL")
-        or os.getenv("FILE_STORAGE_URL")
-        or "http://127.0.0.1:8302"
-    )
+    return FILE_STORAGE_SERVICE_URL
 
 _SPAM_WINDOW_SECONDS = 45
 _SPAM_SIMILARITY_THRESHOLD = 0.88
@@ -237,6 +242,11 @@ def _monitor_public_message_activity(user: User, content: str, message_id: int, 
         
         user.suspended = True
         user.suspension_reason = reason
+        try:
+            from .account import revoke_all_user_sessions
+            revoke_all_user_sessions(db, user.id)
+        except Exception:
+            pass
         db.commit()
         log_security(
             event,
@@ -249,6 +259,9 @@ def _monitor_public_message_activity(user: User, content: str, message_id: int, 
         )
         try:
             asyncio.create_task(messagingManager.send_suspension_to_user(user.id, reason, db))
+            asyncio.create_task(
+                messagingManager.disconnect_user(user.id, code=4003, reason="Account suspended")
+            )
         except Exception:
             pass
         try:
@@ -773,16 +786,10 @@ async def _store_public_normal_attachment(
         else:
             stored = await service_calls.store_normal_file_from_path_in_storage(safe_name, src)
             file_size = int(stored.get("size") or src_size)
-            mod = service_calls._get_file_storage_module()
-            dimension_path = (
-                mod.get_normal_file_path_internal(safe_name)
-                if mod is not None
-                else src
-            )
             await _maybe_store_public_thumbnail(
                 safe_name,
                 original_name,
-                source_path=dimension_path,
+                source_path=src,
                 file_size=file_size,
             )
     else:
@@ -849,6 +856,16 @@ async def _send_message_internal(
     
     This can be called from both HTTP endpoints and WebSocket handlers.
     """
+    db.refresh(current_user)
+    if current_user.suspended:
+        raise HTTPException(
+            status_code=403,
+            detail="Account suspended",
+            headers={"suspension_reason": current_user.suspension_reason or "No reason provided"},
+        )
+    if current_user.deleted:
+        raise HTTPException(status_code=403, detail="Account deleted")
+
     if message_request.reply_to_id:
         # Check if the message being replied to exists
         original_message = db.query(Message).filter(Message.id == message_request.reply_to_id).first()
@@ -1661,6 +1678,16 @@ async def _edit_message_internal(
 
     This can be called from both HTTP endpoints and WebSocket handlers.
     """
+    db.refresh(current_user)
+    if current_user.suspended:
+        raise HTTPException(
+            status_code=403,
+            detail="Account suspended",
+            headers={"suspension_reason": current_user.suspension_reason or "No reason provided"},
+        )
+    if current_user.deleted:
+        raise HTTPException(status_code=403, detail="Account deleted")
+
     message = db.query(Message).filter(Message.id == message_id).first()
 
     if not message:
@@ -2183,7 +2210,10 @@ class MessaggingSocketManager:
         try:
             await websocket.close(code=code, reason=message)
         finally:
-            self.connections.remove(websocket)
+            try:
+                self.connections.remove(websocket)
+            except ValueError:
+                pass
 
     async def connect(self, websocket: WebSocket, db: Session):
         await websocket.accept()
@@ -2306,6 +2336,25 @@ class MessaggingSocketManager:
         await self.send_update_to_user(user_id, "suspended", {
             "reason": reason
         })
+
+    async def disconnect_user(
+        self,
+        user_id: int,
+        *,
+        code: int = 4003,
+        reason: str = "Account suspended",
+    ) -> None:
+        """Force-close every WebSocket belonging to a user (handler finally cleans up)."""
+        sockets = [
+            websocket
+            for websocket, uid in list(self.user_by_ws.items())
+            if uid == user_id
+        ]
+        for websocket in sockets:
+            try:
+                await websocket.close(code=code, reason=reason)
+            except Exception:
+                pass
 
     async def send_unsuspension_to_user(self, user_id: int):
         """Send unsuspension message to user's WebSocket connections (as batched update)"""
@@ -2433,6 +2482,8 @@ class MessaggingSocketManager:
 
                 # Wait 1 second before next cleanup
                 await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(f"Error in typing cleanup task: {e}")
                 await asyncio.sleep(1.0)
@@ -2442,14 +2493,41 @@ class MessaggingSocketManager:
         if self._cleanup_task is None or self._cleanup_task.done():
             from ..db import SessionLocal
             async def cleanup_with_db():
-                while True:
-                    try:
-                        with SessionLocal() as db:
-                            await self.cleanup_stale_typing_indicators(db)
-                    except Exception as e:
-                        logger.error(f"Error in cleanup task wrapper: {e}")
-                        await asyncio.sleep(1.0)
+                try:
+                    with SessionLocal() as db:
+                        await self.cleanup_stale_typing_indicators(db)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in cleanup task wrapper: {e}")
             self._cleanup_task = asyncio.create_task(cleanup_with_db())
+
+    async def shutdown(self) -> None:
+        """Stop background work and close WebSockets so uvicorn can exit."""
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+
+        for task in list(self.update_batch_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self.update_batch_tasks.clear()
+
+        for websocket in list(self.connections):
+            try:
+                await websocket.close(code=1001)
+            except Exception:
+                pass
+        self.connections.clear()
+        self.user_by_ws.clear()
+        self.ws_subscriptions.clear()
+        self.pending_updates.clear()
+        self.last_seq_by_ws.clear()
+        self.recent_updates.clear()
 
 messagingManager = MessaggingSocketManager()
 
@@ -2480,40 +2558,29 @@ async def proxy_normal_file(
     if filename != safe_name:
         raise HTTPException(status_code=400, detail="Invalid file name")
 
-    mod = service_calls._get_file_storage_module()
-    if mod:
+    file_storage_url = _get_file_storage_url()
+    target_url = f"{file_storage_url}/uploads/files/normal/{safe_name}"
+    headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+    async with httpx.AsyncClient() as client:
         try:
-            return await mod.get_file_normal_internal(safe_name)
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-        except Exception as e:
-            logger.error("In-process file_storage.get_file_normal failed: %s", e)
+            response = await client.get(target_url, headers=headers)
+            if response.status_code == 200:
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=response.headers.get("content-type")
+                )
+            if response.status_code != 404:
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=response.headers.get("content-type")
+                )
+        except httpx.RequestError as e:
+            logger.error("Failed to proxy file request: %s", e)
             raise HTTPException(status_code=500, detail="File service unavailable")
-    else:
-        file_storage_url = _get_file_storage_url()
-        target_url = f"{file_storage_url}/uploads/files/normal/{safe_name}"
-        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.get(target_url, headers=headers)
-                if response.status_code == 200:
-                    return Response(
-                        content=response.content,
-                        status_code=response.status_code,
-                        headers=dict(response.headers),
-                        media_type=response.headers.get("content-type")
-                    )
-                if response.status_code != 404:
-                    return Response(
-                        content=response.content,
-                        status_code=response.status_code,
-                        headers=dict(response.headers),
-                        media_type=response.headers.get("content-type")
-                    )
-            except httpx.RequestError as e:
-                logger.error("Failed to proxy file request: %s", e)
-                raise HTTPException(status_code=500, detail="File service unavailable")
 
     legacy_path = FILES_NORMAL_DIR / safe_name
     if legacy_path.is_file():
@@ -2534,16 +2601,6 @@ async def proxy_thumb_file(
     safe_name = Path(filename).name
     if filename != safe_name:
         raise HTTPException(status_code=400, detail="Invalid file name")
-
-    mod = service_calls._get_file_storage_module()
-    if mod:
-        try:
-            return await mod.get_file_thumb_internal(safe_name)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("In-process file_storage.get_file_thumb failed: %s", e)
-            raise HTTPException(status_code=500, detail="File service unavailable")
 
     file_storage_url = _get_file_storage_url()
     target_url = f"{file_storage_url}/uploads/files/thumbs/{safe_name}"
@@ -2587,16 +2644,6 @@ async def proxy_encrypted_file(
     current_user: User = Depends(get_current_user_allow_suspended)
 ):
     """Proxy file requests to file_storage service."""
-    mod = service_calls._get_file_storage_module()
-    if mod:
-        try:
-            return await mod.get_file_encrypted_internal(filename, current_user.id)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("In-process file_storage.get_file_encrypted failed: %s", e)
-            raise HTTPException(status_code=500, detail="File service unavailable")
-
     file_storage_url = _get_file_storage_url()
     target_url = f"{file_storage_url}/uploads/files/encrypted/{filename}"
     headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
