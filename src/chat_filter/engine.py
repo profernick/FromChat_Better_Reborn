@@ -90,6 +90,8 @@ _CUSTOM_RU_TERMS: Set[str] = {
     "издохни",
     "сгинь",
     "выпейяду",
+    "взорвать",
+    "взорву",
     "теракт",
     "сиськ",
     "минет",
@@ -156,18 +158,19 @@ _WHITELIST: Set[str] = {
 _STATIC_TERMS: Set[str] = {t.lower() for t in (_CUSTOM_RU_TERMS | _ADULT_TERMS)}
 
 _PHRASE_PATTERNS = (
-    # существовало по приколу, ладно, не буду цензурить на ровном месте :)
-    # re.compile(r"max\s*is\s*better", re.IGNORECASE),
-    # re.compile(r"макс\s*лучше", re.IGNORECASE),
-    # re.compile(r"fromchat\s*г[ао]вно", re.IGNORECASE),
-    # re.compile(r"фромчат\s*г[ао]вно", re.IGNORECASE),
-    # re.compile(r"18\+"),
-    # re.compile(r"xxx", re.IGNORECASE),
+    re.compile(r"max\s*is\s*better", re.IGNORECASE),
+    re.compile(r"макс\s*лучше", re.IGNORECASE),
+    re.compile(r"fromchat\s*г[ао]вно", re.IGNORECASE),
+    re.compile(r"фромчат\s*г[ао]вно", re.IGNORECASE),
+    re.compile(r"18\+"),
+    re.compile(r"xxx", re.IGNORECASE),
+    # Whole-token СВО only (avoid своих / свободно).
     re.compile(r"(?<![a-zа-яё])сво(?![a-zа-яё])", re.IGNORECASE),
+    # Latin/Cyrillic/phonetic Z+V military symbols as a token.
     re.compile(
         r"(?<![a-zа-яё])[zзᴢ][\s\-_.]*[vｖᴠв](?![a-zа-яё])",
         re.IGNORECASE,
-    )
+    ),
 )
 
 _lock = RLock()
