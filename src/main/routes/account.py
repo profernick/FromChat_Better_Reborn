@@ -16,6 +16,7 @@ from ..models import (
     LoginRequest,
     RegisterRequest,
     ChangePasswordRequest,
+    ChangeYandexRequest,
     VerifyPasswordRequest,
     DeleteAccountRequest,
     User,
@@ -653,6 +654,71 @@ def change_password(
     return {"status": "success"}
 
 
+@router.get("/account/yandex")
+@rate_limit_per_ip("30/minute")
+def get_account_yandex(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    from ..auth.yandex_oauth import public_yandex_oauth_params, yandex_is_configured
+
+    if not yandex_is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Yandex sign-in is not configured on this server.",
+        )
+    return {
+        "linked": bool(current_user.yandex_id),
+        "yandex": public_yandex_oauth_params(),
+    }
+
+
+@router.post("/account/yandex")
+@rate_limit_per_ip("5/hour")
+def change_account_yandex(
+    request: Request,
+    body: ChangeYandexRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from ..auth.yandex_oauth import verify_registration_proof, yandex_is_configured
+
+    if not yandex_is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Yandex sign-in is not configured on this server.",
+        )
+    new_id = verify_registration_proof(body.registration_proof)
+    previous = current_user.yandex_id
+    if previous == new_id:
+        return {"status": "success", "unchanged": True}
+
+    linked = (
+        db.query(User)
+        .filter(User.yandex_id == new_id, User.id != current_user.id)
+        .first()
+    )
+    if linked is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This Yandex account is already linked to another FromChat user.",
+        )
+
+    current_user.yandex_id = new_id
+    db.commit()
+
+    client_ip = get_client_ip(request)
+    log_security(
+        "yandex_id_changed",
+        username=current_user.username,
+        user_id=current_user.id,
+        ip=client_ip,
+        previous_yandex_id=previous,
+        new_yandex_id=new_id,
+    )
+    return {"status": "success", "unchanged": False}
+
+
 def _verify_derived_password(user: User, password_derived: str) -> None:
     if not verify_password(password_derived.strip(), user.password_hash):
         raise HTTPException(status_code=400, detail="Wrong password")
@@ -677,20 +743,6 @@ def verify_password_endpoint(
     return {"status": "success"}
 
 
-@router.get("/users")
-@rate_limit_per_ip("30/minute")  # Per-IP limit to prevent abuse
-def list_users(request: Request, current_user: User = Depends(get_current_user_allow_suspended), db: Session = Depends(get_db)):
-    users = db.query(User).order_by(User.username.asc()).all()
-    is_admin = current_user.id == 1
-    return {
-        "users": [
-            convert_user(u, db, viewer_id=current_user.id)
-            for u in users
-            if u.id != current_user.id and (is_admin or not is_deleted_or_suspended(u))
-        ]
-    }
-
-
 @router.get("/crypto/public-key/of/{user_id}")
 @rate_limit_per_ip("100/minute")  # Per-IP limit to prevent abuse
 def get_public_key_of(
@@ -706,6 +758,9 @@ def get_public_key_of(
 @router.get("/users/search")
 @rate_limit_per_ip("60/minute")  # Per-IP limit to prevent abuse
 def search_users(request: Request, q: str, current_user: User = Depends(get_current_user_allow_suspended), db: Session = Depends(get_db)):
+    from ..security.scrape_limit import enforce_users_search_soft_limit
+
+    enforce_users_search_soft_limit(current_user.id)
     if len(q.strip()) < 2:
         return {"users": []}
     

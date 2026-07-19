@@ -10,7 +10,7 @@ import logging
 from sqlalchemy.orm.exc import DetachedInstanceError
 
 # Import from same directory
-from .routes import account, messaging, profile, public_chat, push, devices, moderation, download, keys, envelope_messaging, livekit, static as static_routes
+from .routes import account, messaging, profile, public_chat, push, devices, moderation, download, keys, envelope_messaging, livekit, static as static_routes, auth_steps
 from .routes.account import get_server_instance_id
 from .models import User
 from .constants import OWNER_USERNAME
@@ -120,6 +120,14 @@ async def lifespan(app: FastAPI):
         logger.error("Failed to start key lifecycle cleanup task: %s", e)
         key_lifecycle_task = None
 
+    try:
+        from .yandex_id_lifecycle_task import start_yandex_id_release_task
+        yandex_id_task = asyncio.create_task(start_yandex_id_release_task())
+        logger.info("Yandex ID release task started")
+    except Exception as e:
+        logger.error("Failed to start yandex id release task: %s", e)
+        yandex_id_task = None
+
     yield
 
     # Shutdown — stop background tasks and force-close WebSockets so Ctrl+C / SIGTERM exits.
@@ -140,6 +148,13 @@ async def lifespan(app: FastAPI):
         key_lifecycle_task.cancel()
         try:
             await key_lifecycle_task
+        except asyncio.CancelledError:
+            pass
+
+    if yandex_id_task:
+        yandex_id_task.cancel()
+        try:
+            await yandex_id_task
         except asyncio.CancelledError:
             pass
 
@@ -275,6 +290,7 @@ app.add_middleware(
 
 # Routes
 app.include_router(account.router)
+app.include_router(auth_steps.router)
 app.include_router(envelope_messaging.router)
 app.include_router(messaging.router)
 app.include_router(public_chat.router)

@@ -24,6 +24,10 @@ class User(Base):
     suspended = Column(Boolean, default=False)
     suspension_reason = Column(Text, nullable=True)
     deleted = Column(Boolean, default=False)
+    # Set when deleted becomes true; used to release yandex_id after the hold period.
+    deleted_at = Column(DateTime, nullable=True, index=True)
+    # Opaque Yandex subject (id/psuid); never store Yandex profile PII here.
+    yandex_id = Column(String(128), unique=True, nullable=True, index=True)
     messages = relationship("Message", back_populates="author", lazy="select")
 
 
@@ -233,6 +237,10 @@ class VerifyPasswordRequest(BaseModel):
 
 class DeleteAccountRequest(BaseModel):
     passwordDerived: str
+
+
+class ChangeYandexRequest(BaseModel):
+    registration_proof: str
 
 
 class SendMessageRequest(BaseModel):

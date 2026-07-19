@@ -1,0 +1,22 @@
+---
+description: Keep compose.yml and generate-env.sh in sync when backend env vars change
+alwaysApply: true
+---
+
+# Backend environment variables
+
+Whenever you **add, rename, change the default of, or remove** an environment variable used by the backend (including `os.getenv` / `os.environ` reads and compose-injected vars):
+
+1. Update [`compose.yml`](compose.yml) — pass the var into the correct service’s `environment:` (usually `backend`). Prefer `${NAME:-default}` when a local default is safe.
+2. Update [`scripts/generate-env.sh`](scripts/generate-env.sh) — add/remove/adjust the matching line in `_ENV_TEMPLATE` (static default, empty value, `<set>`, or `<gen:…>` as appropriate).
+
+Do this in the **same change** as the code that introduces or drops the variable. Do not leave compose / generate-env out of date.
+
+```bash
+# ❌ BAD — only read in Python
+os.getenv("MY_NEW_FLAG")
+
+# ✅ GOOD — Python + compose.yml environment + generate-env.sh _ENV_TEMPLATE
+```
+
+Secrets: never hardcode real secrets in compose or the template; use `${NAME}` / empty / `<set>` and document intended defaults only.

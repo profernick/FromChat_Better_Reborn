@@ -1298,6 +1298,9 @@ async def get_messages(
     current_user: User = Depends(get_current_user_allow_suspended),
     db: Session = Depends(get_db),
 ):
+    from ..security.scrape_limit import enforce_get_messages_soft_limit
+
+    enforce_get_messages_soft_limit(current_user.id)
     page_limit = _normalize_page_limit(limit)
     if sum(x is not None for x in (before_id, after_id, around_id)) > 1:
         if around_id is not None:

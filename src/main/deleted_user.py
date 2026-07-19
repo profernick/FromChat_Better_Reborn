@@ -40,6 +40,7 @@ def should_redact_for_viewer(user: User, viewer_id: int | None) -> bool:
 
 def apply_deleted_user_db_fields(user: User) -> None:
     user.deleted = True
+    user.deleted_at = datetime.now(timezone.utc)
     user.username = deleted_username_for(user.id)
     user.display_name = ""
     user.bio = None
@@ -48,6 +49,7 @@ def apply_deleted_user_db_fields(user: User) -> None:
     user.last_seen = DELETED_LAST_SEEN
     user.created_at = None
     user.online = False
+    # Keep yandex_id until hold period elapses (see yandex_id_lifecycle).
 
 
 def deleted_user_api_fields(user_id: int) -> dict:

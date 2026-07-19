@@ -60,11 +60,64 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _pg_quote_ident(name: str) -> str:
+    """Quote a PostgreSQL identifier (required for reserved names like user)."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _add_missing_model_columns(connection, Base) -> int:
+    """Add columns present on models but missing in the DB. Returns count added."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(connection)
+    existing_tables = set(inspector.get_table_names())
+    added = 0
+
+    for table_name, table in Base.metadata.tables.items():
+        if table_name == "alembic_version" or table_name not in existing_tables:
+            continue
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        tbl = _pg_quote_ident(table_name)
+        for column in table.columns:
+            if column.name in existing_columns:
+                continue
+            sql_type = _get_sql_type(column)
+            nullable = "NULL" if column.nullable else "NOT NULL"
+            col = _pg_quote_ident(column.name)
+            default_clause = ""
+            if column.type.__class__.__name__ != "DateTime" and column.default is not None:
+                if hasattr(column.default, "arg") and not callable(column.default.arg):
+                    default_clause = f" DEFAULT {repr(column.default.arg)}"
+            alter_sql = f"ALTER TABLE {tbl} ADD COLUMN {col} {sql_type} {nullable}{default_clause}"
+            try:
+                connection.execute(text(alter_sql))
+                if column.type.__class__.__name__ == "DateTime" and column.nullable:
+                    connection.execute(
+                        text(f"UPDATE {tbl} SET {col} = CURRENT_TIMESTAMP WHERE {col} IS NULL")
+                    )
+                if column.unique:
+                    idx = _pg_quote_ident(f"ix_{table_name}_{column.name}")
+                    connection.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {tbl} ({col})"))
+                elif column.index:
+                    idx = _pg_quote_ident(f"ix_{table_name}_{column.name}")
+                    connection.execute(text(f"CREATE INDEX IF NOT EXISTS {idx} ON {tbl} ({col})"))
+                logger.info("Added column %s to %s", column.name, table_name)
+                added += 1
+            except Exception as e:
+                connection.rollback()
+                logger.error("Could not add column %s to %s: %s", column.name, table_name, e)
+    return added
+
+
 def _ensure_all_model_tables():
-    """Create any model tables that do not exist (e.g. dm_edit_history added after migrations)."""
+    """Create missing tables and add missing columns from models."""
     engine = _create_engine_with_retry()
     Base = _load_models_base()
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as connection:
+        added = _add_missing_model_columns(connection, Base)
+        if added:
+            connection.commit()
     logger.info("Ensured all model tables exist.")
 
 
@@ -553,58 +606,17 @@ def _create_database_directly():
     with engine.connect() as connection:
         inspector = inspect(connection)
         existing_tables = inspector.get_table_names()
-        
-        # For each model table, check if it needs updates
+
         for table_name, table in Base.metadata.tables.items():
-            if table_name != 'alembic_version':
-                if table_name in existing_tables:
-                    # Table exists, check for missing columns
-                    existing_columns = {col['name'] for col in inspector.get_columns(table_name)}
-                    expected_columns = {col.name for col in table.columns}
-                    missing_columns = expected_columns - existing_columns
-                    
-                    # Add missing columns
-                    for column in table.columns:
-                        if column.name in missing_columns:
-                            # Convert to raw SQL for direct execution
-                            sql_type = _get_sql_type(column)
-                            nullable = "NULL" if column.nullable else "NOT NULL"
-                            
-                            # Handle datetime columns without default
-                            if column.type.__class__.__name__ == 'DateTime':
-                                # Add column without default, then update existing rows
-                                alter_sql = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {sql_type} {nullable}"
-                                try:
-                                    connection.execute(text(alter_sql))
-                                    logger.info(f"Added column {column.name} to {table_name}")
-                                    
-                                    # Update existing rows with current timestamp
-                                    update_sql = f"UPDATE {table_name} SET {column.name} = CURRENT_TIMESTAMP WHERE {column.name} IS NULL"
-                                    connection.execute(text(update_sql))
-                                    logger.info(f"Updated {column.name} with current timestamp")
-                                except Exception as e:
-                                    logger.error(f"Could not add column {column.name}: {e}")
-                            else:
-                                # Handle other column types with defaults
-                                default_clause = ""
-                                if column.default is not None:
-                                    if hasattr(column.default, 'arg') and callable(column.default.arg):
-                                        pass
-                                    elif hasattr(column.default, 'arg'):
-                                        default_clause = f" DEFAULT {repr(column.default.arg)}"
-                                
-                                alter_sql = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {sql_type} {nullable}{default_clause}"
-                                try:
-                                    connection.execute(text(alter_sql))
-                                    logger.info(f"Added column {column.name} to {table_name}")
-                                except Exception as e:
-                                    logger.error(f"Could not add column {column.name}: {e}")
-                else:
-                    # Table doesn't exist, create it
-                    logger.info(f"Creating table {table_name}")
-                    from sqlalchemy.schema import CreateTable
-                    connection.execute(CreateTable(Base.metadata.tables[table_name]))
-        
+            if table_name == "alembic_version":
+                continue
+            if table_name not in existing_tables:
+                logger.info(f"Creating table {table_name}")
+                from sqlalchemy.schema import CreateTable
+                connection.execute(CreateTable(Base.metadata.tables[table_name]))
+
+        _add_missing_model_columns(connection, Base)
+
         # Create alembic_version table manually
         connection.execute(text("""
             CREATE TABLE IF NOT EXISTS alembic_version (
