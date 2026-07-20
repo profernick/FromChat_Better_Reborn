@@ -4,6 +4,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from PIL import Image
 import os
@@ -17,6 +18,7 @@ from ..presence_service import presence_service
 from ..models import User, UpdateBioRequest, UserProfileResponse
 from pydantic import BaseModel
 from ..validation import is_valid_username, is_valid_display_name
+from ..username import username_taken
 from ..verification_service import (
     VerificationStatus,
     compute_verification_status,
@@ -317,15 +319,7 @@ async def update_user_profile(
             )
         
         # Case-insensitive uniqueness; store typed casing as entered.
-        existing_user = (
-            db.query(User)
-            .filter(
-                func.lower(User.username) == username.lower(),
-                User.id != current_user.id,
-            )
-            .first()
-        )
-        if existing_user:
+        if username_taken(db, username, exclude_user_id=current_user.id):
             raise HTTPException(status_code=400, detail="Это имя пользователя уже занято")
         
         current_user.username = username
@@ -363,7 +357,11 @@ async def update_user_profile(
         updated = True
     
     if updated:
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Это имя пользователя уже занято")
         db.refresh(current_user)
         await broadcast_profile_update(current_user, db)
         return {

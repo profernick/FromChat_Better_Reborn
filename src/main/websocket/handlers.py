@@ -29,6 +29,7 @@ from ..models import (
 )
 from ..routes.profile import build_profile_update_payload
 from ..deleted_user import public_display_username
+from ..presence_service import presence_service
 from ..security.audit import log_access, log_dm
 
 logger = logging.getLogger("uvicorn.error")
@@ -479,6 +480,7 @@ async def addReaction(manager: MessaggingSocketManager, websocket: WebSocket, db
             "action": response["action"],
             "user_id": user.id,
             "username": public_display_username(user),
+            "display_name": "" if user is None else (user.display_name or ""),
             "reactions": response["reactions"]
         }
     }, db)
@@ -506,6 +508,7 @@ async def addDmReaction(manager: MessaggingSocketManager, websocket: WebSocket, 
             "action": response["action"],
             "user_id": user.id,
             "username": public_display_username(user),
+            "display_name": "" if user is None else (user.display_name or ""),
             "reactions": response["reactions"]
         }
     }, db)

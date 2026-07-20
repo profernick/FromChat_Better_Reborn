@@ -109,6 +109,14 @@ def _add_missing_model_columns(connection, Base) -> int:
     return added
 
 
+def _ensure_username_case_insensitive_unique(connection) -> None:
+    """Ensure usernames are unique case-insensitively (PostgreSQL functional index)."""
+    tbl = _pg_quote_ident("user")
+    connection.execute(
+        text(f"CREATE UNIQUE INDEX IF NOT EXISTS uq_user_username_lower ON {tbl} (lower(username))")
+    )
+
+
 def _ensure_all_model_tables():
     """Create missing tables and add missing columns from models."""
     engine = _create_engine_with_retry()
@@ -116,7 +124,10 @@ def _ensure_all_model_tables():
     Base.metadata.create_all(bind=engine)
     with engine.connect() as connection:
         added = _add_missing_model_columns(connection, Base)
+        _ensure_username_case_insensitive_unique(connection)
         if added:
+            connection.commit()
+        else:
             connection.commit()
     logger.info("Ensured all model tables exist.")
 

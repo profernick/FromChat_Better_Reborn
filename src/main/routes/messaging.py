@@ -353,6 +353,21 @@ def _monitor_public_message_activity(user: User, content: str, message_id: int, 
         )
 
 
+def _reaction_user_payload(user: User | None, user_id: int) -> dict:
+    """Minimal identity for reaction lists: real login + display name (never swapped)."""
+    if user is None or is_deleted_or_suspended(user):
+        return {
+            "id": user_id,
+            "username": deleted_username_for(user_id),
+            "display_name": "",
+        }
+    return {
+        "id": user_id,
+        "username": user.username,
+        "display_name": user.display_name or "",
+    }
+
+
 def convert_message(
     msg: Message,
     verified_users_data: list[dict[str, str]] | None = None,
@@ -370,23 +385,21 @@ def convert_message(
                     "users": []
                 }
             reactions_dict[emoji]["count"] += 1
-            reactions_dict[emoji]["users"].append({
-                "id": reaction.user_id,
-                "username": (
-                    deleted_username_for(reaction.user_id)
-                    if is_deleted_or_suspended(reaction.user)
-                    else reaction.user.display_name
-                ),
-            })
+            reactions_dict[emoji]["users"].append(
+                _reaction_user_payload(reaction.user, reaction.user_id)
+            )
 
     # Handle deleted or suspended authors (peers see them as deleted accounts)
     if is_deleted_or_suspended(msg.author):
         username = deleted_username_for(msg.author.id)
+        display_name = ""
         profile_picture = None
         verified = False
         verification_status = VerificationStatus.NONE.value
     else:
-        username = msg.author.display_name
+        # Real login handle — never put display_name in the username field
+        username = msg.author.username
+        display_name = msg.author.display_name or ""
         profile_picture = msg.author.profile_picture
         verified = msg.author.verified
         verification_status = compute_verification_status(msg.author, vdata).value
@@ -399,6 +412,7 @@ def convert_message(
         "is_read": msg.is_read,
         "is_edited": msg.is_edited,
         "username": username,
+        "display_name": display_name,
         "profile_picture": profile_picture,
         "verified": verified,
         "verification_status": verification_status,
@@ -451,14 +465,9 @@ def convert_dm_envelope(db: Session, envelope: DMEnvelope, user_id: int | None =
                     "users": []
                 }
             reactions_dict[emoji]["count"] += 1
-            reactions_dict[emoji]["users"].append({
-                "id": reaction.user_id,
-                "username": (
-                    deleted_username_for(reaction.user_id)
-                    if is_deleted_or_suspended(reaction.user)
-                    else reaction.user.display_name
-                ),
-            })
+            reactions_dict[emoji]["users"].append(
+                _reaction_user_payload(reaction.user, reaction.user_id)
+            )
 
     # Get sender info for verified status
     sender = db.query(User).filter(User.id == envelope.sender_id).first()
@@ -469,6 +478,7 @@ def convert_dm_envelope(db: Session, envelope: DMEnvelope, user_id: int | None =
         sender_verified = False
         verification_status = VerificationStatus.NONE.value
         sender_username = deleted_username_for(sender.id)
+        sender_display_name = ""
     else:
         sender_verified = sender.verified if sender else False
         verification_status = (
@@ -477,6 +487,7 @@ def convert_dm_envelope(db: Session, envelope: DMEnvelope, user_id: int | None =
             else VerificationStatus.NONE.value
         )
         sender_username = sender.username if sender else f"user_{envelope.sender_id}"
+        sender_display_name = (sender.display_name or "") if sender else ""
 
     # Return only the MEK wrapped with the requesting user's key
     if user_id == envelope.sender_id:
@@ -495,6 +506,7 @@ def convert_dm_envelope(db: Session, envelope: DMEnvelope, user_id: int | None =
         "senderId": envelope.sender_id,
         "recipientId": envelope.recipient_id,
         "sender_username": sender_username,
+        "sender_display_name": sender_display_name,
         "iv_b64": envelope.iv_b64,
         "ciphertext_b64": envelope.ciphertext_b64,
         "wrapped_mek_b64": wrapped_mek_b64,

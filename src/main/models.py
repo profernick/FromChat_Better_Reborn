@@ -1,5 +1,5 @@
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, inspect, null, text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Index, inspect, null, text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from pydantic import BaseModel
@@ -10,9 +10,12 @@ Base = declarative_base()
 # Модели базы данных
 class User(Base):
     __tablename__ = "user"
+    __table_args__ = (
+        Index("uq_user_username_lower", text("lower(username)"), unique=True),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), unique=True, nullable=False, index=True)
+    username = Column(String(50), nullable=False, index=True)
     display_name = Column(String(64), nullable=False)
     password_hash = Column(String(200), nullable=False)
     profile_picture = Column(String(255), nullable=True)

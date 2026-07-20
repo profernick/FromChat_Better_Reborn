@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from user_agents import parse as parse_ua
 
@@ -23,6 +24,7 @@ from ..security.audit import log_security
 from ..security.chat_filter import contains_profanity
 from ..security.rate_limit import rate_limit_per_ip
 from ..utils import create_token, get_client_ip, get_password_hash, verify_password
+from ..username import username_taken
 from ..validation import is_valid_display_name, is_valid_password, is_valid_username
 from .account import (
     _record_failed_login,
@@ -197,12 +199,7 @@ def auth_step_username(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Имя пользователя содержит запрещённые слова",
         )
-    exists = (
-        db.query(User)
-        .filter(func.lower(User.username) == username.lower())
-        .first()
-        is not None
-    )
+    exists = username_taken(db, username)
     return {"ok": True, "exists": exists}
 
 
@@ -314,12 +311,7 @@ def auth_step_register_confirm(
             detail="Пароли не совпадают",
         )
 
-    existing_user = (
-        db.query(User)
-        .filter(func.lower(User.username) == username.lower())
-        .first()
-    )
-    if existing_user:
+    if username_taken(db, username):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Это имя пользователя уже занято",
@@ -357,7 +349,14 @@ def auth_step_register_confirm(
         yandex_id=yandex_id,
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Это имя пользователя уже занято",
+        )
     db.refresh(new_user)
 
     session_id = _create_device_session(db, new_user, request)

@@ -125,9 +125,10 @@ class PushNotificationService:
                     "type": "public_message",
                     "message_id": message.id,
                     "sender_id": message.user_id,
-                    "sender_username": message.author.username
+                    "sender_username": message.author.username,
+                    "sender_display_name": message.author.display_name or "",
                 }
-                title = f"{message.author.username}"
+                title = f"{message.author.display_name or message.author.username}"
                 body = message.content[:100] + ("..." if len(message.content) > 100 else "")
                 logger.debug(
                     "send_public_message_notification: user=%s fcm_tokens=%d",
@@ -138,11 +139,14 @@ class PushNotificationService:
                 if fcm_rows and self.firebase_initialized:
                     for fcm in fcm_rows:
                         try:
+                            # Data-only: client builds a single MessagingStyle conversation.
+                            # A notification payload would also auto-post tray entries and duplicate.
                             response = self._send_fcm_to_token(
                                 fcm.token,
                                 title,
                                 body,
                                 payload_data,
+                                include_notification=False,
                             )
                             logger.info(
                                 "FCM public push sent user=%s token=%s response=%s",
@@ -182,13 +186,14 @@ class PushNotificationService:
             dm_envelope.recipient_id,
         )
         try:
-            title = f"{sender.username}"
+            title = f"{sender.display_name or sender.username}"
             body = "New direct message"
             payload_data = {
                 "type": "dm",
                 "dm_id": dm_envelope.id,
                 "sender_id": sender.id,
-                "sender_username": sender.username
+                "sender_username": sender.username,
+                "sender_display_name": sender.display_name or "",
             }
 
             fcm_rows = db.query(FcmToken).filter(FcmToken.user_id == dm_envelope.recipient_id).all()

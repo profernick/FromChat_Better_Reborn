@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import func, inspect, text
+from sqlalchemy import inspect, text
 import uuid
 import secrets
 
@@ -22,6 +22,7 @@ from ..models import (
     DeviceSession,
 )
 from ..utils import get_password_hash, verify_password, get_client_ip
+from ..username import username_taken
 from ..validation import is_valid_password, is_valid_username, is_valid_display_name
 from ..deleted_user import (
     apply_deleted_user_db_fields,
@@ -203,13 +204,7 @@ def check_username(request: Request, username: str, db: Session = Depends(get_db
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username must be 3 to 20 characters and contain only English letters, digits, hyphens, and underscores",
         )
-    exists = (
-        db.query(User)
-        .filter(func.lower(User.username) == u.lower())
-        .first()
-        is not None
-    )
-    return {"exists": exists}
+    return {"exists": username_taken(db, u)}
 
 
 @router.get("/crypto/public-key")
