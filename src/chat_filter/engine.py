@@ -37,9 +37,14 @@ _CUSTOM_RU_TERMS: Set[str] = {
     "уёбок",
     "уебок",
     "уебище",
+    "еблищ",
+    "еблахищ",
+    "ебал",
+    "пенис",
     "пизда",
     "пиздец",
     "хуй",
+    "хуи",
     "хуя",
     "хуе",
     "хуё",
@@ -164,13 +169,20 @@ _PHRASE_PATTERNS = (
     re.compile(r"фромчат\s*г[ао]вно", re.IGNORECASE),
     re.compile(r"18\+"),
     re.compile(r"xxx", re.IGNORECASE),
-    # Whole-token СВО only (avoid своих / свободно).
-    re.compile(r"(?<![a-zа-яё])сво(?![a-zа-яё])", re.IGNORECASE),
+    # Whole-token СВО / SVO only (avoid своих / svoboda).
+    re.compile(r"(?<![a-zа-яё])(?:сво|svo)(?![a-zа-яё])", re.IGNORECASE),
     # Latin/Cyrillic/phonetic Z+V military symbols as a token.
     re.compile(
         r"(?<![a-zа-яё])[zзᴢ][\s\-_.]*[vｖᴠв](?![a-zа-яё])",
         re.IGNORECASE,
     ),
+    # Latin Z-O-V propaganda symbol (do not match Cyrillic «зов»).
+    re.compile(
+        r"(?<![a-zа-яё])z[\s\-_.]*o[\s\-_.]*v(?![a-zа-яё])",
+        re.IGNORECASE,
+    ),
+    # Stretched Latin «porn» (Pooornooo-style).
+    re.compile(r"p[\s\-_.]*o{2,}[\s\-_.]*r[\s\-_.]*n[\s\-_.]*o+", re.IGNORECASE),
 )
 
 _lock = RLock()

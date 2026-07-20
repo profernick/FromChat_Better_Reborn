@@ -492,6 +492,8 @@ def cyrillic_alternates(normalized: str) -> Tuple[str, ...]:
     alts = {normalized}
     if "хуу" in normalized:
         alts.add(normalized.replace("хуу", "хуй"))
+    if "хуи" in normalized:
+        alts.add(normalized.replace("хуи", "хуй"))
     chars = list(normalized)
     for i in range(1, len(chars)):
         if chars[i] == "у" and chars[i - 1] == "х":
