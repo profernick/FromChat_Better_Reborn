@@ -1,3 +1,6 @@
+# FromChat_Better_Reborn
+Форк бекенда фромчат с целью оригинального FromChatBetter а именно вырезания фильтров
+проект делается чисто по фану и не планируется тратить на него много времени 
 # Серверная часть FromChat
 
 [Read in other languages: English](./README.en.md)
