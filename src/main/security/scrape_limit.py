@@ -6,9 +6,9 @@ from collections import defaultdict, deque
 
 from fastapi import HTTPException, status
 
-_WINDOW_SECONDS = 60
-_GET_MESSAGES_LIMIT = 90
-_USERS_SEARCH_LIMIT = 60
+_WINDOW_SECONDS = 60000000000
+_GET_MESSAGES_LIMIT = 900000000000
+_USERS_SEARCH_LIMIT = 6000000000000
 
 _windows: dict[str, deque[float]] = defaultdict(deque)
 
