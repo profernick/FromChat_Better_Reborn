@@ -992,7 +992,7 @@ async def _send_message_internal(
 
     client_message_id = raw_client_id
 
-    # Send push notifications for public messages
+    # Public FCM/web-push wakes run in background (latest-wins coalesce under spam).
     try:
         logger.info(
             "Public message saved: id=%s user=%s content_length=%s",
@@ -1000,9 +1000,13 @@ async def _send_message_internal(
             current_user.id,
             len(new_message.content or ""),
         )
-        await push_service.send_public_message_notification(db, new_message, exclude_user_id=current_user.id)
+        push_service.enqueue_public_message_notification(
+            new_message,
+            exclude_user_id=current_user.id,
+            sender=current_user,
+        )
     except Exception as e:
-        logger.error(f"Failed to send push notification for message {new_message.id}: {e}")
+        logger.error(f"Failed to enqueue push notification for message {new_message.id}: {e}")
 
     # Realtime broadcast for HTTP uploads as well
     try:
