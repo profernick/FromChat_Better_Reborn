@@ -168,16 +168,7 @@ def _handle_failed_login(username: str, client_ip: str | None) -> None:
 
 
 def _resolve_yandex_id_for_register(body: RegisterConfirmRequest) -> str | None:
-    if not yandex_required_for_register():
-        return None
-    if body.registration_proof and body.registration_proof.strip():
-        return verify_registration_proof(body.registration_proof.strip())
-    if body.yandex_code and body.code_verifier:
-        proof = exchange_code_for_registration_proof(body.yandex_code, body.code_verifier)
-        return verify_registration_proof(proof)
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Yandex verification is required to create an account.",
+    return None
     )
 
 
@@ -194,11 +185,6 @@ def auth_step_username(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Имя пользователя должно быть от 3 до 20 символов и содержать только английские буквы, цифры, дефисы и подчеркивания",
         )
-    if contains_profanity(username):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Имя пользователя содержит запрещённые слова",
-        )
     exists = username_taken(db, username)
     return {"ok": True, "exists": exists}
 
@@ -214,11 +200,6 @@ def auth_step_password(
     password = body.password.strip()
     client_ip = get_client_ip(request)
 
-    if contains_profanity(username):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Имя пользователя содержит запрещённые слова",
-        )
     if not is_valid_username(username):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -285,20 +266,10 @@ def auth_step_register_confirm(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Имя пользователя должно быть от 3 до 20 символов и содержать только английские буквы, цифры, дефисы и подчеркивания",
         )
-    if contains_profanity(username):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Имя пользователя содержит запрещённые слова",
-        )
     if not is_valid_display_name(display_name):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Отображаемое имя должно быть от 1 до 64 символов и не может быть пустым",
-        )
-    if contains_profanity(display_name):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Отображаемое имя содержит запрещённые слова",
         )
     if not is_valid_password(password):
         raise HTTPException(
