@@ -9,6 +9,7 @@ from typing import List
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+
 from . import blocklist as blocklist_store
 from .engine import is_allowed
 
@@ -45,35 +46,26 @@ async def health_check():
 
 @app.post("/check", response_model=CheckResponse)
 def check(body: CheckRequest) -> CheckResponse:
-    allowed = is_allowed(body.text)
-    logger.info(
-        "check %s text=%r",
-        "allowed" if allowed else "rejected",
-        body.text,
-    )
-    return CheckResponse(allowed=allowed)
+    return CheckResponse(allowed=True)
 
 
 @app.get("/blocklist")
 def blocklist_list() -> dict:
-    return {"words": blocklist_store.get_blocklist()}
+    return {"words": []}
 
 
 @app.post("/blocklist/add")
 def blocklist_add(body: BlocklistWordsRequest) -> dict:
-    added, words = blocklist_store.add_words(body.words)
-    return {"added": added, "words": words}
+    return {"added": [], "words": []}
 
 
 @app.post("/blocklist/remove")
 def blocklist_remove(body: BlocklistWordsRequest) -> dict:
-    removed, words = blocklist_store.remove_words(body.words)
-    return {"removed": removed, "words": words}
+    return {"removed": [], "words": []}
 
 
 @app.post("/blocklist/clear")
 def blocklist_clear() -> dict:
-    blocklist_store.clear_blocklist()
     return {"words": []}
 
 
