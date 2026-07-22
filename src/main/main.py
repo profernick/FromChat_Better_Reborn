@@ -161,7 +161,7 @@ async def lifespan(app: FastAPI):
 INSTANCE_ID_HEADER = "X-FromChat-Instance-Id"
 
 # Initialize FastAPI
-app = FastAPI(title="FromChat", lifespan=lifespan)
+app = FastAPI(title="FromChatBetter", lifespan=lifespan)
 
 
 @app.middleware("http")
