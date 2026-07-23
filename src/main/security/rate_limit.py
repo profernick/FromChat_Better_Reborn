@@ -65,3 +65,5 @@ async def start_rate_limit_cleanup_task() -> None:
     try:
         while True:
             await asyncio.sleep(86400)
+    except asyncio.CancelledError:
+                break
